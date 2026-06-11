@@ -1,0 +1,165 @@
+package handlers
+
+import (
+	"net/http"
+	"os"
+	"path/filepath"
+
+	"github.com/go-chi/chi/v5"
+	chimw "github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
+	authpkg "github.com/shorebird-server/internal/auth"
+	"github.com/shorebird-server/internal/api/middleware"
+	"github.com/shorebird-server/internal/db"
+	"github.com/shorebird-server/internal/storage"
+)
+
+// NewRouter creates the HTTP router with all API routes.
+func NewRouter(authService *authpkg.Service, database *db.DB, store *storage.Service) *chi.Mux {
+	r := chi.NewRouter()
+	r.Use(chimw.Logger)
+	r.Use(chimw.Recoverer)
+
+	// CORS
+	r.Use(cors.Handler(cors.Options{
+		AllowedOrigins:   []string{"*"},
+		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-Version"},
+		ExposedHeaders:   []string{"Link"},
+		AllowCredentials: true,
+		MaxAge:           300,
+	}))
+
+	// Initialize handlers
+	authHandler := &AuthHandler{DB: database, AuthService: authService}
+	userHandler := &UserHandler{DB: database}
+	appHandler := &AppHandler{DB: database}
+	channelHandler := &ChannelHandler{DB: database}
+	orgHandler := &OrganizationHandler{DB: database}
+	releaseHandler := &ReleaseHandler{DB: database, Storage: store}
+	patchHandler := &PatchHandler{DB: database, Storage: store}
+	deviceHandler := &DeviceHandler{DB: database, Storage: store}
+	diagHandler := &DiagnosticsHandler{}
+	adminHandler := &AdminHandler{DB: database}
+
+	// Auth middleware
+	authMw := middleware.AuthMiddleware(authService)
+
+	// --- Auth routes (no auth required) ---
+	r.Route("/auth", func(r chi.Router) {
+		r.Post("/token", authHandler.Login)
+		r.Post("/register", authHandler.Register)
+		r.With(authMw).Post("/refresh", authHandler.Refresh)
+	})
+
+	// --- API v1 routes ---
+	r.Route("/api/v1", func(r chi.Router) {
+		// Public endpoints (no auth required - called by devices)
+		r.Post("/patches/check", deviceHandler.PatchCheck)
+		r.Post("/patches/events", deviceHandler.PatchEvents)
+
+		// Authenticated endpoints
+		r.Group(func(r chi.Router) {
+			r.Use(authMw)
+
+			// Users
+			r.Get("/users/me", userHandler.GetCurrentUser)
+			r.Post("/users", userHandler.CreateUser)
+
+			// Organizations
+			r.Get("/organizations", orgHandler.GetOrganizations)
+
+			// Apps
+			r.Get("/apps", appHandler.GetApps)
+			r.Post("/apps", appHandler.CreateApp)
+			r.Delete("/apps/{appId}", appHandler.DeleteApp)
+
+			// Channels
+			r.Get("/apps/{appId}/channels", channelHandler.GetChannels)
+			r.Post("/apps/{appId}/channels", channelHandler.CreateChannel)
+
+			// Releases
+			r.Get("/apps/{appId}/releases", releaseHandler.GetReleases)
+			r.Post("/apps/{appId}/releases", releaseHandler.CreateRelease)
+			r.Patch("/apps/{appId}/releases/{releaseId}", releaseHandler.UpdateRelease)
+
+			// Release artifacts
+			r.Post("/apps/{appId}/releases/{releaseId}/artifacts", releaseHandler.CreateReleaseArtifact)
+			r.Get("/apps/{appId}/releases/{releaseId}/artifacts", releaseHandler.GetReleaseArtifacts)
+
+			// Patches
+			r.Post("/apps/{appId}/patches", patchHandler.CreatePatch)
+			r.Patch("/apps/{appId}/patches/{patchId}", patchHandler.UpdatePatch)
+
+			// Patch artifacts
+			r.Post("/apps/{appId}/patches/{patchId}/artifacts", patchHandler.CreatePatchArtifact)
+
+			// Patch listing and promotion
+			r.Get("/apps/{appId}/releases/{releaseId}/patches", patchHandler.GetPatches)
+			r.Post("/apps/{appId}/patches/promote", patchHandler.PromotePatch)
+
+			// Rollback
+			r.Post("/apps/{appId}/patches/rollback", deviceHandler.RollbackPatch)
+
+			// Diagnostics
+			r.Get("/diagnostics/gcp_upload", diagHandler.GCPUploadSpeedTest)
+			r.Get("/diagnostics/gcp_download", diagHandler.GCPDownloadSpeedTest)
+
+			// Admin: user listing
+			r.Get("/admin/users", adminHandler.ListUsers)
+
+			// Admin: targeted device patching
+			r.Post("/admin/patches/{patchId}/target-devices", adminHandler.AddTargetDevice)
+			r.Delete("/admin/patches/{patchId}/target-devices/{clientId}", adminHandler.RemoveTargetDevice)
+			r.Get("/admin/patches/{patchId}/target-devices", adminHandler.GetTargetDevices)
+			r.Get("/admin/apps/{appId}/events", adminHandler.GetPatchEvents)
+		})
+	})
+
+	// --- Static files: Web UI ---
+	webDir := findWebDir()
+	if webDir != "" {
+		fileServer := http.FileServer(http.Dir(webDir))
+		r.Handle("/web/*", http.StripPrefix("/web/", fileServer))
+
+		// Catch-all: serve the SPA index.html for the dashboard
+		r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFile(w, r, filepath.Join(webDir, "index.html"))
+		})
+		r.Get("/dashboard", func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFile(w, r, filepath.Join(webDir, "index.html"))
+		})
+	}
+
+	// Health check
+	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"ok"}`))
+	})
+
+	return r
+}
+
+// findWebDir locates the web/ directory. It searches relative to the
+// binary and from common workspace paths so that the dashboard works
+// in local development as well as in the Docker image.
+func findWebDir() string {
+	candidates := []string{
+		"web",
+		"../../web",
+		filepath.Join("..", "web"),
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		candidates = append(candidates, filepath.Join(cwd, "web"))
+	}
+	// Also check relative to the executable
+	if exe, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(exe), "web"))
+	}
+	for _, p := range candidates {
+		if info, err := os.Stat(p); err == nil && info.IsDir() {
+			return p
+		}
+	}
+	return ""
+}

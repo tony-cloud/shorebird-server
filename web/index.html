@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shorebird Self-Hosted</title>
+    <link rel="stylesheet" href="/web/css/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%230891b2'/><text x='50%25' y='55%25' text-anchor='middle' dy='.1em' font-size='20' fill='white'>🐦</text></svg>">
+</head>
+<body>
+
+<!-- ============================================================
+     LOGIN PAGE
+     ============================================================ -->
+<div id="loginPage" class="login-container">
+    <div class="login-card">
+        <div class="logo-icon">🐦</div>
+        <h1>Shorebird</h1>
+        <p class="subtitle">Self-Hosted Dashboard</p>
+        <div id="loginError" class="login-error"></div>
+        <form id="loginForm">
+            <div class="form-group">
+                <label for="loginEmail">Email</label>
+                <input type="email" id="loginEmail" placeholder="admin@example.com" required autofocus>
+            </div>
+            <div class="form-group">
+                <label for="loginPassword">Password</label>
+                <input type="password" id="loginPassword" placeholder="Enter password" required>
+            </div>
+            <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;padding:12px;">
+                Sign In
+            </button>
+        </form>
+        <p style="text-align:center;margin-top:16px;font-size:13px;color:var(--text-muted);">
+            No account? <a href="#" id="showRegister" style="color:var(--primary);">Register</a>
+        </p>
+    </div>
+</div>
+
+<!-- Registration modal on login page -->
+<div id="registerOverlay" class="modal-overlay">
+    <div class="modal">
+        <h3>Create Account</h3>
+        <form id="registerForm">
+            <div class="form-group">
+                <label for="regName">Name</label>
+                <input type="text" id="regName" placeholder="Your name" required>
+            </div>
+            <div class="form-group">
+                <label for="regEmail">Email</label>
+                <input type="email" id="regEmail" placeholder="you@example.com" required>
+            </div>
+            <div class="form-group">
+                <label for="regPassword">Password</label>
+                <input type="password" id="regPassword" placeholder="Min 6 characters" required minlength="6">
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-outline" onclick="closeRegister()">Cancel</button>
+                <button type="submit" class="btn btn-primary">Register & Sign In</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- ============================================================
+     APP SHELL (hidden until authenticated)
+     ============================================================ -->
+<div id="appContainer" class="app-container">
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <div class="logo">🐦</div>
+            <h2>Shorebird</h2>
+        </div>
+        <nav class="sidebar-nav" id="sidebarNav">
+            <a href="#dashboard" class="active" data-page="dashboard">
+                <span class="nav-icon">📊</span> Dashboard
+            </a>
+            <a href="#apps" data-page="apps">
+                <span class="nav-icon">📱</span> Apps
+            </a>
+            <a href="#users" data-page="users">
+                <span class="nav-icon">👥</span> Users
+            </a>
+            <a href="#settings" data-page="settings">
+                <span class="nav-icon">⚙️</span> Settings
+            </a>
+        </nav>
+        <div class="sidebar-footer" id="sidebarFooter">
+            Shorebird v1.0 · Self-Hosted
+        </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+        <!-- Top Bar -->
+        <div class="top-bar">
+            <h2 id="pageTitle">Dashboard</h2>
+            <div class="user-info">
+                <span id="currentUserEmail">—</span>
+                <button class="btn-sm" id="logoutBtn" title="Sign out">Sign Out</button>
+            </div>
+        </div>
+
+        <!-- Toast container -->
+        <div class="toast-container" id="toastContainer"></div>
+
+        <!-- ================================================
+             DASHBOARD PAGE
+             ================================================ -->
+        <section id="page-dashboard" class="page-section active">
+            <div class="stats-grid" id="statsGrid">
+                <div class="stat-card primary"><div class="stat-value" id="statApps">—</div><div class="stat-label">Apps</div></div>
+                <div class="stat-card success"><div class="stat-value" id="statPatches">—</div><div class="stat-label">Patches</div></div>
+                <div class="stat-card warning"><div class="stat-value" id="statUsers">—</div><div class="stat-label">Users</div></div>
+                <div class="stat-card"><div class="stat-value" id="statOrganizations">—</div><div class="stat-label">Organizations</div></div>
+            </div>
+            <div class="card">
+                <div class="card-header"><h3>Recent Apps</h3></div>
+                <div class="card-body" id="recentAppsTable"></div>
+            </div>
+        </section>
+
+        <!-- ================================================
+             APPS PAGE
+             ================================================ -->
+        <section id="page-apps" class="page-section">
+            <div class="card">
+                <div class="card-header">
+                    <h3>All Applications</h3>
+                    <button class="btn btn-primary" onclick="openCreateAppModal()">+ New App</button>
+                </div>
+                <div class="card-body" id="appsTable"></div>
+            </div>
+        </section>
+
+        <!-- ================================================
+             USERS PAGE
+             ================================================ -->
+        <section id="page-users" class="page-section">
+            <div class="card">
+                <div class="card-header">
+                    <h3>All Users</h3>
+                    <button class="btn btn-primary" onclick="openCreateUserModal()">+ New User</button>
+                </div>
+                <div class="card-body" id="usersTable"></div>
+            </div>
+        </section>
+
+        <!-- ================================================
+             SETTINGS PAGE
+             ================================================ -->
+        <section id="page-settings" class="page-section">
+            <div class="card">
+                <div class="card-header"><h3>Server Configuration</h3></div>
+                <div class="card-body" style="padding:24px;">
+                    <div class="info-grid" id="serverInfo"></div>
+                </div>
+            </div>
+            <div class="card" style="margin-top:20px;">
+                <div class="card-header"><h3>API Token</h3></div>
+                <div class="card-body" style="padding:24px;">
+                    <p style="font-size:14px;color:var(--text-secondary);margin-bottom:12px;">
+                        Use this token to authenticate the Shorebird CLI:
+                    </p>
+                    <div class="form-group">
+                        <input type="text" id="apiTokenDisplay" readonly
+                               style="font-family:var(--mono);font-size:13px;cursor:pointer;"
+                               onclick="this.select();document.execCommand('copy')"
+                               title="Click to copy">
+                    </div>
+                    <p class="form-hint">Click the token to copy. Set as <code>SHOREBIRD_TOKEN</code> env var.</p>
+                </div>
+            </div>
+        </section>
+    </main>
+</div>
+
+<!-- ============================================================
+     MODALS
+     ============================================================ -->
+
+<!-- Create App Modal -->
+<div id="createAppOverlay" class="modal-overlay">
+    <div class="modal">
+        <h3>Create New App</h3>
+        <form id="createAppForm">
+            <div class="form-group">
+                <label for="appDisplayName">Display Name</label>
+                <input type="text" id="appDisplayName" placeholder="My Flutter App" required>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-outline" onclick="closeModal('createAppOverlay')">Cancel</button>
+                <button type="submit" class="btn btn-primary">Create App</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Create User Modal -->
+<div id="createUserOverlay" class="modal-overlay">
+    <div class="modal">
+        <h3>Create New User</h3>
+        <form id="createUserForm">
+            <div class="form-group">
+                <label for="newUserName">Name</label>
+                <input type="text" id="newUserName" placeholder="Full name" required>
+            </div>
+            <div class="form-group">
+                <label for="newUserEmail">Email</label>
+                <input type="email" id="newUserEmail" placeholder="user@example.com" required>
+            </div>
+            <div class="form-group">
+                <label for="newUserPassword">Password</label>
+                <input type="password" id="newUserPassword" placeholder="Min 6 characters" required minlength="6">
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-outline" onclick="closeModal('createUserOverlay')">Cancel</button>
+                <button type="submit" class="btn btn-primary">Create User</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Confirm Delete Modal -->
+<div id="confirmModal" class="modal-overlay">
+    <div class="modal">
+        <h3 id="confirmTitle">Confirm</h3>
+        <p id="confirmMessage" style="font-size:14px;color:var(--text-secondary);"></p>
+        <div class="modal-actions">
+            <button class="btn btn-outline" onclick="closeModal('confirmModal')">Cancel</button>
+            <button class="btn btn-danger" id="confirmBtn" onclick="executeConfirm()">Delete</button>
+        </div>
+    </div>
+</div>
+
+<script src="/web/js/app.js"></script>
+</body>
+</html>
