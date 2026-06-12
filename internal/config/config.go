@@ -7,34 +7,47 @@ import (
 
 // Config holds all configuration for the Shorebird server.
 type Config struct {
-	Server   ServerConfig
-	Database DatabaseConfig
-	Storage  StorageConfig
-	Auth     AuthConfig
-	Redis    RedisConfig
+	Server  ServerConfig
+	DB      DBConfig
+	Storage StorageConfig
+	Auth    AuthConfig
+	Redis   RedisConfig
 }
 
 // ServerConfig holds HTTP server configuration.
 type ServerConfig struct {
 	Host         string
 	Port         string
+	BaseURL      string // public-facing URL, used for download links
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 }
 
-// DatabaseConfig holds PostgreSQL connection configuration.
-type DatabaseConfig struct {
+// DBConfig holds database configuration.
+type DBConfig struct {
+	// Driver is "postgres" or "sqlite". Empty defaults to "sqlite".
+	Driver string
+	// URL is the PostgreSQL connection string (used when driver=postgres).
 	URL string
+	// Path is the SQLite database file path (used when driver=sqlite).
+	Path string
 }
 
-// StorageConfig holds object storage (S3/MinIO) configuration.
+// StorageConfig holds object storage configuration.
 type StorageConfig struct {
-	Endpoint        string
-	AccessKeyID     string
-	SecretAccessKey string
-	UseSSL          bool
-	ReleaseBucket   string
-	PatchBucket     string
+	// Driver is "local" or "s3". Empty defaults to "local".
+	Driver string
+
+	// Local settings
+	LocalDir string
+
+	// S3/MinIO settings
+	S3Endpoint      string
+	S3AccessKey     string
+	S3SecretKey     string
+	S3UseSSL        bool
+	S3ReleaseBucket string
+	S3PatchBucket   string
 }
 
 // AuthConfig holds JWT authentication configuration.
@@ -52,23 +65,31 @@ type RedisConfig struct {
 
 // Load reads configuration from environment variables with sensible defaults.
 func Load() *Config {
+	port := envOrDefault("SERVER_PORT", "8080")
+	baseURL := envOrDefault("SERVER_BASE_URL", "http://localhost:"+port)
+
 	return &Config{
 		Server: ServerConfig{
 			Host:         envOrDefault("SERVER_HOST", "0.0.0.0"),
-			Port:         envOrDefault("SERVER_PORT", "8080"),
+			Port:         port,
+			BaseURL:      baseURL,
 			ReadTimeout:  15 * time.Second,
 			WriteTimeout: 30 * time.Second,
 		},
-		Database: DatabaseConfig{
-			URL: envOrDefault("DATABASE_URL", "postgres://shorebird:shorebird@localhost:5432/shorebird?sslmode=disable"),
+		DB: DBConfig{
+			Driver: envOrDefault("DB_DRIVER", "sqlite"),
+			URL:    envOrDefault("DATABASE_URL", "postgres://shorebird:shorebird@localhost:5432/shorebird?sslmode=disable"),
+			Path:   envOrDefault("DB_PATH", "data/shorebird.db"),
 		},
 		Storage: StorageConfig{
-			Endpoint:        envOrDefault("STORAGE_ENDPOINT", "localhost:9000"),
-			AccessKeyID:     envOrDefault("STORAGE_ACCESS_KEY", "minioadmin"),
-			SecretAccessKey: envOrDefault("STORAGE_SECRET_KEY", "minioadmin"),
-			UseSSL:          false,
-			ReleaseBucket:   envOrDefault("STORAGE_RELEASE_BUCKET", "shorebird-releases"),
-			PatchBucket:     envOrDefault("STORAGE_PATCH_BUCKET", "shorebird-patches"),
+			Driver:          envOrDefault("STORAGE_DRIVER", "local"),
+			LocalDir:        envOrDefault("STORAGE_LOCAL_DIR", "data/storage"),
+			S3Endpoint:      envOrDefault("STORAGE_S3_ENDPOINT", "localhost:9000"),
+			S3AccessKey:     envOrDefault("STORAGE_S3_ACCESS_KEY", "minioadmin"),
+			S3SecretKey:     envOrDefault("STORAGE_S3_SECRET_KEY", "minioadmin"),
+			S3UseSSL:        os.Getenv("STORAGE_S3_USE_SSL") == "true",
+			S3ReleaseBucket: envOrDefault("STORAGE_S3_RELEASE_BUCKET", "shorebird-releases"),
+			S3PatchBucket:   envOrDefault("STORAGE_S3_PATCH_BUCKET", "shorebird-patches"),
 		},
 		Auth: AuthConfig{
 			JWTSecret:     envOrDefault("JWT_SECRET", "change-me-in-production-use-a-long-random-string"),

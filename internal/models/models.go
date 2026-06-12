@@ -174,9 +174,11 @@ const (
 
 // Organization represents an organization.
 type Organization struct {
-	ID   int    `json:"id"`
-	Name string `json:"name"`
-	Type string `json:"type"`
+	ID               int       `json:"id"`
+	Name             string    `json:"name"`
+	OrganizationType string    `json:"organization_type"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 // OrganizationMembership represents a user's membership in an org.
@@ -233,10 +235,18 @@ type CreateReleaseArtifactRequest struct {
 	PodfileLockHash *string `json:"podfile_lock_hash"`
 }
 
-// CreateReleaseArtifactResponse returns the presigned upload URL.
+// CreateReleaseArtifactResponse returns the artifact metadata.
 type CreateReleaseArtifactResponse struct {
-	ID  int    `json:"id"`
-	URL string `json:"url"`
+	ID              int       `json:"id"`
+	ReleaseID       int       `json:"release_id"`
+	Arch            string    `json:"arch"`
+	Platform        string    `json:"platform"`
+	Hash            string    `json:"hash"`
+	Size            int64     `json:"size"`
+	URL             string    `json:"url"`
+	CreatedAt       time.Time `json:"created_at"`
+	CanSideload     bool      `json:"can_sideload"`
+	PodfileLockHash *string   `json:"podfile_lock_hash"`
 }
 
 // CreatePatchRequest is the POST /patches request body.
@@ -260,10 +270,15 @@ type CreatePatchArtifactRequest struct {
 	PodfileLockHash *string `json:"podfile_lock_hash"`
 }
 
-// CreatePatchArtifactResponse returns the presigned upload URL.
+// CreatePatchArtifactResponse returns the patch artifact metadata.
 type CreatePatchArtifactResponse struct {
-	ID  int    `json:"id"`
-	URL string `json:"url"`
+	ID       int    `json:"id"`
+	PatchID  int    `json:"patch_id"`
+	Arch     string `json:"arch"`
+	Platform string `json:"platform"`
+	Hash     string `json:"hash"`
+	Size     int64  `json:"size"`
+	URL      string `json:"url"`
 }
 
 // UpdateReleaseRequest is the PATCH /releases/{id} request body.

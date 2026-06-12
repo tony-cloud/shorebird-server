@@ -31,7 +31,11 @@ func AuthMiddleware(authService *auth.Service) func(http.Handler) http.Handler {
 				return
 			}
 
-			claims, err := authService.ValidateToken(parts[1])
+			token := parts[1]
+			// Strip sb_api_ prefix (self-hosted API key format for Shorebird CLI compatibility)
+			token = strings.TrimPrefix(token, "sb_api_")
+
+			claims, err := authService.ValidateToken(token)
 			if err != nil {
 				http.Error(w, `{"message":"Invalid or expired token"}`, http.StatusUnauthorized)
 				return

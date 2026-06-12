@@ -11,7 +11,7 @@ import (
 
 // AdminHandler handles admin/management API endpoints.
 type AdminHandler struct {
-	DB *db.DB
+	DB db.Store
 }
 
 // AddTargetDevice handles POST /api/v1/admin/patches/{patchId}/target-devices

@@ -2,62 +2,61 @@
 
 A self-hosted replacement for the Shorebird CodePush API server (`api.shorebird.dev`).
 
-## Quick Start
+## Quick Start (Zero Dependencies)
+
+By default the server uses **SQLite** + **local filesystem** — no Docker,
+no Postgres, no MinIO needed.
 
 ### Prerequisites
 - Go 1.23+
-- Docker & Docker Compose (for PostgreSQL and MinIO)
 
-### 1. Start infrastructure
-
-```bash
-docker compose up -d
-```
-
-### 2. Run database migrations
-
-```bash
-make migrate-up
-```
-
-Or manually:
-```bash
-goose -dir internal/db/migrations postgres "postgres://shorebird:shorebird@localhost:5432/shorebird?sslmode=disable" up
-```
-
-### 3. Start the server
+### 1. Build and run
 
 ```bash
 make run
 ```
 
-The server starts on `http://localhost:8080`.
+That's it. The server starts on `http://localhost:8080`. SQLite database
+and file storage are auto-created under the `data/` directory.
 
-### 4. Open the Web Dashboard
+### 2. Open the Web Dashboard
 
-Navigate to **http://localhost:8080** in your browser. You'll see the login page where you can:
+Navigate to **http://localhost:8080** → Register → Start managing apps.
 
-- **Register** a new admin account
-- **Login** with your credentials
+### 3. (Optional) Use PostgreSQL + MinIO
 
-The dashboard provides:
-
-| Page | Features |
-|------|----------|
-| **Dashboard** | Overview stats (apps, patches, users, orgs), recent apps list |
-| **Apps** | Create, list, and delete applications with App ID copy |
-| **Users** | View all registered users and their roles |
-| **Settings** | Server info, API base URL, and token display (click to copy) |
-
-### 5. Register via API (or use the Web UI)
+For production deployments that need horizontal scaling:
 
 ```bash
-curl -X POST http://localhost:8080/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"email":"dev@example.com","password":"securepass","name":"Developer"}'
+# Start infrastructure
+docker compose --profile full up -d
+
+# Set backend overrides
+export DB_DRIVER=postgres
+export DATABASE_URL=postgres://shorebird:shorebird@localhost:5432/shorebird?sslmode=disable
+export STORAGE_DRIVER=s3
+export STORAGE_S3_ENDPOINT=localhost:9000
+export STORAGE_S3_ACCESS_KEY=minioadmin
+export STORAGE_S3_SECRET_KEY=minioadmin
+export STORAGE_S3_USE_SSL=false
+
+# Then run the server
+make run
 ```
 
-Save the returned `token` for subsequent API calls.
+### Configuration
+
+All settings via environment variables. See `.env.example` for the full list.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DB_DRIVER` | `sqlite` | `sqlite` or `postgres` |
+| `DB_PATH` | `data/shorebird.db` | SQLite file path |
+| `STORAGE_DRIVER` | `local` | `local` or `s3` |
+| `STORAGE_LOCAL_DIR` | `data/storage` | Local storage directory |
+| `JWT_SECRET` | *(insecure default)* | Set in production! |
+| `SERVER_PORT` | `8080` | HTTP port |
+| `SERVER_BASE_URL` | `http://localhost:8080` | Public URL for download links |
 
 ### 6. Configure Shorebird CLI
 
@@ -144,11 +143,11 @@ See `.env.example` for all available configuration options.
 │       │             │                  │              │
 │       ▼             ▼                  ▼              │
 │  ┌──────────────────────────────────────────────────┐ │
-│  │              PostgreSQL                           │ │
+│  │              SQLite / PostgreSQL                   │ │
 │  │  (apps, releases, patches, artifacts, events)    │ │
 │  └──────────────────────────────────────────────────┘ │
 │  ┌──────────────────────────────────────────────────┐ │
-│  │              MinIO (S3-compatible)                │ │
+│  │         Local FS / MinIO (S3-compatible)          │ │
 │  │  shorebird-releases (private)                     │ │
 │  │  shorebird-patches (public)                       │ │
 │  └──────────────────────────────────────────────────┘ │

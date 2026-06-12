@@ -14,8 +14,8 @@ import (
 
 // PatchHandler handles patch-related API endpoints.
 type PatchHandler struct {
-	DB      *db.DB
-	Storage *storage.Service
+	DB      db.Store
+	Storage storage.Store
 }
 
 // CreatePatch handles POST /api/v1/apps/{appId}/patches
@@ -117,14 +117,20 @@ func (h *PatchHandler) CreatePatchArtifact(w http.ResponseWriter, r *http.Reques
 		phl = &podfileLockHash
 	}
 
-	_, err = h.DB.CreatePatchArtifact(r.Context(), patchID, arch, platform, hash, storageKey, size, hs, phl)
+	artifact, err := h.DB.CreatePatchArtifact(r.Context(), patchID, arch, platform, hash, storageKey, size, hs, phl)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "Failed to create artifact record", strPtr(err.Error()))
 		return
 	}
 
 	respondJSON(w, http.StatusCreated, models.CreatePatchArtifactResponse{
-		URL: uploadURL,
+		ID:       artifact.ID,
+		PatchID:  artifact.PatchID,
+		Arch:     artifact.Arch,
+		Platform: artifact.Platform,
+		Hash:     artifact.Hash,
+		Size:     artifact.Size,
+		URL:      uploadURL,
 	})
 }
 
@@ -157,7 +163,7 @@ func (h *PatchHandler) GetPatches(w http.ResponseWriter, r *http.Request) {
 			ReleaseID:   p.ReleaseID,
 			PatchID:     p.ID,
 			PatchNumber: p.Number,
-			CreatedAt:   p.PromotedAt,
+			CreatedAt:   p.PromotedAt.Time,
 		})
 	}
 

@@ -1,43 +1,27 @@
-.PHONY: run build test migrate-up migrate-down docker-up docker-down
+.PHONY: run build test docker-up docker-down tidy fmt
 
-# Default target
-all: build
+# Default: build and run with zero dependencies (SQLite + local storage)
+all: build run
 
-# Build the server binary
 build:
 	go build -o bin/shorebird-server ./cmd/server
 
-# Run the server locally
 run:
 	go run ./cmd/server
 
-# Run tests
 test:
 	go test ./... -v
 
-# Docker Compose
+# Docker with full stack (PostgreSQL + MinIO)
+# Uses profiles so docker compose up (no args) does nothing.
 docker-up:
-	docker compose up -d
-	docker compose logs -f
+	docker compose --profile full up -d
 
 docker-down:
-	docker compose down
+	docker compose --profile full down
 
-# Database migrations
-migrate-up:
-	goose -dir internal/db/migrations postgres "postgres://shorebird:shorebird@localhost:5432/shorebird?sslmode=disable" up
-
-migrate-down:
-	goose -dir internal/db/migrations postgres "postgres://shorebird:shorebird@localhost:5432/shorebird?sslmode=disable" down
-
-# Tidy dependencies
 tidy:
 	go mod tidy
 
-# Format code
 fmt:
 	go fmt ./...
-
-# Lint
-lint:
-	golangci-lint run ./...

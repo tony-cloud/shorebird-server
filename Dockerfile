@@ -23,7 +23,7 @@ RUN apk add --no-cache ca-certificates tzdata
 
 WORKDIR /app
 COPY --from=builder /app/shorebird-server .
-COPY internal/db/migrations/ ./internal/db/migrations/
+COPY --from=builder /app/web ./web
 
 EXPOSE 8080
 

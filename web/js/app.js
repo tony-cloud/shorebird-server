@@ -284,14 +284,22 @@ function openCreateUserModal() {
 
 // ---- Settings ----
 async function loadSettings() {
+    // Try to get server info from health endpoint
+    let backendInfo = { storage: 'Unknown', database: 'Unknown' };
+    try {
+        const resp = await fetch('/health');
+        const data = await resp.json();
+        if (data.backend) backendInfo = data.backend;
+    } catch (e) { /* use defaults */ }
+
     const infoDiv = document.getElementById('serverInfo');
     infoDiv.innerHTML = `
         <div class="info-item">
-            <div class="info-label">Server</div>
+            <div class="info-label">Server Version</div>
             <div class="info-value">Shorebird Self-Hosted v1.0</div>
         </div>
         <div class="info-item">
-            <div class="info-label">API Base</div>
+            <div class="info-label">API Base URL</div>
             <div class="info-value"><code class="code">${window.location.origin}/api/v1</code></div>
         </div>
         <div class="info-item">
@@ -299,12 +307,12 @@ async function loadSettings() {
             <div class="info-value"><code class="code">${window.location.origin}/auth</code></div>
         </div>
         <div class="info-item">
-            <div class="info-label">Storage</div>
-            <div class="info-value">MinIO / S3-compatible</div>
+            <div class="info-label">Storage Backend</div>
+            <div class="info-value"><span class="badge badge-info">${backendInfo.storage}</span></div>
         </div>
         <div class="info-item">
-            <div class="info-label">Database</div>
-            <div class="info-value">PostgreSQL</div>
+            <div class="info-label">Database Backend</div>
+            <div class="info-value"><span class="badge badge-success">${backendInfo.database}</span></div>
         </div>
         <div class="info-item">
             <div class="info-label">UI Version</div>
@@ -312,7 +320,6 @@ async function loadSettings() {
         </div>
     `;
 
-    // Show current API token
     document.getElementById('apiTokenDisplay').value = state.token || 'Not authenticated';
 }
 

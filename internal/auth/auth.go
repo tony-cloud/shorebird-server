@@ -20,6 +20,7 @@ type Claims struct {
 	jwt.RegisteredClaims
 	UserID int    `json:"user_id"`
 	Email  string `json:"email"`
+	Aud    string `json:"aud"`
 }
 
 // NewService creates a new auth service.
@@ -43,9 +44,11 @@ func (s *Service) GenerateToken(userID int, email string) (string, error) {
 		},
 		UserID: userID,
 		Email:  email,
+		Aud:    "shorebird",
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	token.Header["kid"] = "shorebird-self-hosted"
 	return token.SignedString(s.jwtSecret)
 }
 

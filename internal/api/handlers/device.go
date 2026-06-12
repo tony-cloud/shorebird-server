@@ -11,8 +11,8 @@ import (
 
 // DeviceHandler handles device-facing API endpoints (no auth required).
 type DeviceHandler struct {
-	DB      *db.DB
-	Storage *storage.Service
+	DB      db.Store
+	Storage storage.Store
 }
 
 // PatchCheck handles POST /api/v1/patches/check

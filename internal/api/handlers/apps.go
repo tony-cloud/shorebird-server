@@ -2,7 +2,7 @@ package handlers
 
 import (
 	"net/http"
-	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/shorebird-server/internal/api/middleware"
@@ -22,7 +22,7 @@ func intPtr(i int) *int {
 
 // UserHandler handles user-related API endpoints.
 type UserHandler struct {
-	DB *db.DB
+	DB db.Store
 }
 
 // GetCurrentUser handles GET /api/v1/users/me
@@ -40,10 +40,13 @@ func (h *UserHandler) GetCurrentUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"id":         user.ID,
-		"email":      user.Email,
-		"name":       user.Name,
-		"created_at": user.CreatedAt,
+		"id":                      user.ID,
+		"email":                   user.Email,
+		"display_name":            user.Name,
+		"jwt_issuer":              "http://localhost:8080/auth",
+		"has_active_subscription": true,
+		"stripe_customer_id":      nil,
+		"patch_overage_limit":     nil,
 	})
 }
 
@@ -80,7 +83,7 @@ func (h *UserHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 
 // AppHandler handles app-related API endpoints.
 type AppHandler struct {
-	DB *db.DB
+	DB db.Store
 }
 
 // GetApps handles GET /api/v1/apps
@@ -100,11 +103,17 @@ func (h *AppHandler) GetApps(w http.ResponseWriter, r *http.Request) {
 	var result []models.AppMetadata
 	for _, a := range apps {
 		result = append(result, models.AppMetadata{
-			AppID:       a.ID.String(),
-			DisplayName: a.DisplayName,
-			CreatedAt:   a.CreatedAt,
-			UpdatedAt:   a.UpdatedAt,
+			AppID:            a.ID.String(),
+			DisplayName:      a.DisplayName,
+			CreatedAt:        a.CreatedAt.Time,
+			UpdatedAt:        a.UpdatedAt.Time,
+			Platforms:        []string{},
+			LatestReleases:   map[string]models.LatestRelease{},
+			PendingReleases:  map[string]models.PendingRelease{},
 		})
+	}
+	if result == nil {
+		result = []models.AppMetadata{}
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{"apps": result})
@@ -154,7 +163,7 @@ func (h *AppHandler) CreateApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondJSON(w, http.StatusCreated, map[string]interface{}{
-		"app_id":       app.ID.String(),
+		"id":           app.ID.String(),
 		"display_name": app.DisplayName,
 		"created_at":   app.CreatedAt,
 		"updated_at":   app.UpdatedAt,
@@ -180,7 +189,7 @@ func (h *AppHandler) DeleteApp(w http.ResponseWriter, r *http.Request) {
 
 // ChannelHandler handles channel-related API endpoints.
 type ChannelHandler struct {
-	DB *db.DB
+	DB db.Store
 }
 
 // GetChannels handles GET /api/v1/apps/{appId}/channels
@@ -240,7 +249,7 @@ func (h *ChannelHandler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 
 // OrganizationHandler handles organization-related API endpoints.
 type OrganizationHandler struct {
-	DB *db.DB
+	DB db.Store
 }
 
 // GetOrganizations handles GET /api/v1/organizations
@@ -259,14 +268,20 @@ func (h *OrganizationHandler) GetOrganizations(w http.ResponseWriter, r *http.Re
 
 	var result []models.OrganizationMembership
 	for _, o := range orgs {
+		now := time.Now().UTC()
 		result = append(result, models.OrganizationMembership{
 			Organization: models.Organization{
-				ID:   o.OrgID,
-				Name: o.OrgName,
-				Type: o.OrgType,
+				ID:               o.OrgID,
+				Name:             o.OrgName,
+				OrganizationType: o.OrgType,
+				CreatedAt:        now,
+				UpdatedAt:        now,
 			},
 			Role: o.Role,
 		})
+	}
+	if result == nil {
+		result = []models.OrganizationMembership{}
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{"organizations": result})

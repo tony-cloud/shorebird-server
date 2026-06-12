@@ -15,7 +15,7 @@ import (
 )
 
 // NewRouter creates the HTTP router with all API routes.
-func NewRouter(authService *authpkg.Service, database *db.DB, store *storage.Service) *chi.Mux {
+func NewRouter(authService *authpkg.Service, database db.Store, store storage.Store) *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(chimw.Logger)
 	r.Use(chimw.Recoverer)
@@ -41,12 +41,21 @@ func NewRouter(authService *authpkg.Service, database *db.DB, store *storage.Ser
 	deviceHandler := &DeviceHandler{DB: database, Storage: store}
 	diagHandler := &DiagnosticsHandler{}
 	adminHandler := &AdminHandler{DB: database}
+	storageHandler := NewStorageHandler(store)
 
 	// Auth middleware
 	authMw := middleware.AuthMiddleware(authService)
 
+	// --- Local storage upload/download (used when STORAGE_DRIVER=local) ---
+	r.Route("/storage", func(r chi.Router) {
+		r.Post("/upload/{scope}/*", storageHandler.Upload)
+		r.Get("/dl/{scope}/*", storageHandler.Download)
+	})
+
 	// --- Auth routes (no auth required) ---
 	r.Route("/auth", func(r chi.Router) {
+		r.Get("/login", authHandler.LoginPage)
+		r.Post("/login", authHandler.LoginPage)
 		r.Post("/token", authHandler.Login)
 		r.Post("/register", authHandler.Register)
 		r.With(authMw).Post("/refresh", authHandler.Refresh)
@@ -134,7 +143,22 @@ func NewRouter(authService *authpkg.Service, database *db.DB, store *storage.Ser
 	// Health check
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok"}`))
+		backend := map[string]string{
+			"storage":  "local",
+			"database": "sqlite",
+		}
+		if _, ok := store.(interface{ BackendName() string }); ok {
+			backend["storage"] = store.BackendName()
+		}
+		// Determine DB backend from the store interface
+		switch database.(type) {
+		case interface{ DriverName() string }:
+			// If PgStore has DriverName method
+			backend["database"] = "postgres"
+		default:
+			backend["database"] = "sqlite"
+		}
+		w.Write([]byte(`{"status":"ok","backend":{"storage":"` + backend["storage"] + `","database":"` + backend["database"] + `"}}`))
 	})
 
 	return r

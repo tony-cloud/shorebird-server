@@ -8,7 +8,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/shorebird-server/internal/api/middleware"
 	"github.com/shorebird-server/internal/db"
 	"github.com/shorebird-server/internal/models"
 	"github.com/shorebird-server/internal/storage"
@@ -26,8 +25,8 @@ func parseIntParam(r *http.Request, name string) (int, error) {
 
 // ReleaseHandler handles release-related API endpoints.
 type ReleaseHandler struct {
-	DB      *db.DB
-	Storage *storage.Service
+	DB      db.Store
+	Storage storage.Store
 }
 
 // GetReleases handles GET /api/v1/apps/{appId}/releases
@@ -62,9 +61,12 @@ func (h *ReleaseHandler) GetReleases(w http.ResponseWriter, r *http.Request) {
 			DisplayName:      rel.DisplayName,
 			Notes:            rel.Notes,
 			PlatformStatuses: statuses,
-			CreatedAt:        rel.CreatedAt,
-			UpdatedAt:        rel.UpdatedAt,
+			CreatedAt:        rel.CreatedAt.Time,
+			UpdatedAt:        rel.UpdatedAt.Time,
 		})
+	}
+	if result == nil {
+		result = []models.Release{}
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{"releases": result})
@@ -100,8 +102,8 @@ func (h *ReleaseHandler) CreateRelease(w http.ResponseWriter, r *http.Request) {
 			DisplayName:      release.DisplayName,
 			Notes:            release.Notes,
 			PlatformStatuses: map[string]string{},
-			CreatedAt:        release.CreatedAt,
-			UpdatedAt:        release.UpdatedAt,
+			CreatedAt:        release.CreatedAt.Time,
+			UpdatedAt:        release.UpdatedAt.Time,
 		},
 	})
 }
@@ -184,8 +186,16 @@ func (h *ReleaseHandler) CreateReleaseArtifact(w http.ResponseWriter, r *http.Re
 	}
 
 	respondJSON(w, http.StatusCreated, models.CreateReleaseArtifactResponse{
-		ID:  artifact.ID,
-		URL: uploadURL,
+		ID:              artifact.ID,
+		ReleaseID:       artifact.ReleaseID,
+		Arch:            artifact.Arch,
+		Platform:        artifact.Platform,
+		Hash:            artifact.Hash,
+		Size:            artifact.Size,
+		URL:             uploadURL,
+		CreatedAt:       artifact.CreatedAt.Time,
+		CanSideload:     artifact.CanSideload,
+		PodfileLockHash: artifact.PodfileLockHash,
 	})
 }
 
@@ -214,7 +224,7 @@ func (h *ReleaseHandler) GetReleaseArtifacts(w http.ResponseWriter, r *http.Requ
 	var result []models.ReleaseArtifact
 	for _, a := range artifacts {
 		// Build a download URL for the artifact
-		downloadURL := fmt.Sprintf("/storage/releases/%s", a.StorageKey)
+		downloadURL := fmt.Sprintf("http://localhost:8080/storage/dl/releases/%s", a.StorageKey)
 		result = append(result, models.ReleaseArtifact{
 			ID:              a.ID,
 			ReleaseID:       a.ReleaseID,
@@ -225,8 +235,12 @@ func (h *ReleaseHandler) GetReleaseArtifacts(w http.ResponseWriter, r *http.Requ
 			URL:             downloadURL,
 			CanSideload:     a.CanSideload,
 			PodfileLockHash: a.PodfileLockHash,
-			CreatedAt:       a.CreatedAt,
+			CreatedAt:       a.CreatedAt.Time,
 		})
+	}
+
+	if result == nil {
+		result = []models.ReleaseArtifact{}
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{"artifacts": result})

@@ -1,8 +1,22 @@
+# Docker Compose file for optional PostgreSQL + MinIO backends.
+# The server runs without Docker by default (SQLite + local filesystem).
+# To use the full stack: docker compose --profile full up -d
+#
+# Then set:
+#   DB_DRIVER=postgres
+#   DATABASE_URL=postgres://shorebird:shorebird@localhost:5432/shorebird?sslmode=disable
+#   STORAGE_DRIVER=s3
+#   STORAGE_S3_ENDPOINT=localhost:9000
+#   STORAGE_S3_ACCESS_KEY=minioadmin
+#   STORAGE_S3_SECRET_KEY=minioadmin
+#   STORAGE_S3_USE_SSL=false
+
 version: "3.9"
 
 services:
   postgres:
     image: postgres:16-alpine
+    profiles: ["full"]
     environment:
       POSTGRES_USER: shorebird
       POSTGRES_PASSWORD: shorebird
@@ -19,6 +33,7 @@ services:
 
   minio:
     image: minio/minio:latest
+    profiles: ["full"]
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -36,6 +51,7 @@ services:
 
   minio-init:
     image: minio/mc:latest
+    profiles: ["full"]
     depends_on:
       minio:
         condition: service_healthy
@@ -50,6 +66,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    profiles: ["full"]
     ports:
       - "6379:6379"
     healthcheck:
