@@ -2,10 +2,13 @@ package handlers
 
 import (
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/shorebird-server/internal/api/middleware"
+	"github.com/shorebird-server/internal/auth"
 	"github.com/shorebird-server/internal/db"
 	"github.com/shorebird-server/internal/models"
 )
@@ -22,7 +25,8 @@ func intPtr(i int) *int {
 
 // UserHandler handles user-related API endpoints.
 type UserHandler struct {
-	DB db.Store
+	DB      db.Store
+	BaseURL string
 }
 
 // GetCurrentUser handles GET /api/v1/users/me
@@ -43,11 +47,50 @@ func (h *UserHandler) GetCurrentUser(w http.ResponseWriter, r *http.Request) {
 		"id":                      user.ID,
 		"email":                   user.Email,
 		"display_name":            user.Name,
-		"jwt_issuer":              "http://localhost:8080/auth",
+		"email_verified":          user.EmailVerified,
+		"is_admin":                user.IsAdmin,
+		"must_change_password":    user.MustChangePassword,
+		"jwt_issuer":              strings.TrimRight(h.BaseURL, "/") + "/auth",
 		"has_active_subscription": true,
 		"stripe_customer_id":      nil,
 		"patch_overage_limit":     nil,
 	})
+}
+
+// UpdatePassword handles PATCH /api/v1/users/me/password
+func (h *UserHandler) UpdatePassword(w http.ResponseWriter, r *http.Request) {
+	claims := middleware.GetClaims(r)
+	if claims == nil {
+		respondError(w, http.StatusUnauthorized, "Unauthorized", nil)
+		return
+	}
+	var req struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body", nil)
+		return
+	}
+	user, err := h.DB.GetUserByID(r.Context(), claims.UserID)
+	if err != nil {
+		respondError(w, http.StatusNotFound, "User not found", nil)
+		return
+	}
+	if !user.MustChangePassword && auth.CheckPassword(user.PasswordHash, req.CurrentPassword) != nil {
+		respondError(w, http.StatusUnauthorized, "Current password is incorrect", nil)
+		return
+	}
+	hash, err := auth.HashPassword(req.NewPassword)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to hash password", nil)
+		return
+	}
+	if err := h.DB.UpdateUserPassword(r.Context(), user.ID, hash); err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to update password", nil)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // CreateUser handles POST /api/v1/users
@@ -103,13 +146,14 @@ func (h *AppHandler) GetApps(w http.ResponseWriter, r *http.Request) {
 	var result []models.AppMetadata
 	for _, a := range apps {
 		result = append(result, models.AppMetadata{
-			AppID:            a.ID.String(),
-			DisplayName:      a.DisplayName,
-			CreatedAt:        a.CreatedAt.Time,
-			UpdatedAt:        a.UpdatedAt.Time,
-			Platforms:        []string{},
-			LatestReleases:   map[string]models.LatestRelease{},
-			PendingReleases:  map[string]models.PendingRelease{},
+			AppID:           a.ID.String(),
+			OrganizationID:  a.OrganizationID,
+			DisplayName:     a.DisplayName,
+			CreatedAt:       a.CreatedAt.Time,
+			UpdatedAt:       a.UpdatedAt.Time,
+			Platforms:       []string{},
+			LatestReleases:  map[string]models.LatestRelease{},
+			PendingReleases: map[string]models.PendingRelease{},
 		})
 	}
 	if result == nil {
@@ -149,6 +193,10 @@ func (h *AppHandler) CreateApp(w http.ResponseWriter, r *http.Request) {
 			req.OrganizationID = orgs[0].OrgID
 		}
 	}
+	if !h.canManageOrganization(r, claims.UserID, req.OrganizationID) {
+		respondError(w, http.StatusForbidden, "Organization admin access required", nil)
+		return
+	}
 
 	app, err := h.DB.CreateApp(r.Context(), req.OrganizationID, req.DisplayName)
 	if err != nil {
@@ -172,10 +220,24 @@ func (h *AppHandler) CreateApp(w http.ResponseWriter, r *http.Request) {
 
 // DeleteApp handles DELETE /api/v1/apps/{appId}
 func (h *AppHandler) DeleteApp(w http.ResponseWriter, r *http.Request) {
+	claims := middleware.GetClaims(r)
+	if claims == nil {
+		respondError(w, http.StatusUnauthorized, "Unauthorized", nil)
+		return
+	}
 	appID := chi.URLParam(r, "appId")
 	id, err := parseUUID(appID)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "Invalid app ID", nil)
+		return
+	}
+	app, err := h.DB.GetAppByID(r.Context(), id)
+	if err != nil {
+		respondError(w, http.StatusNotFound, "App not found", nil)
+		return
+	}
+	if !h.canManageOrganization(r, claims.UserID, app.OrganizationID) {
+		respondError(w, http.StatusForbidden, "Organization admin access required", nil)
 		return
 	}
 
@@ -185,6 +247,50 @@ func (h *AppHandler) DeleteApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *AppHandler) TransferApp(w http.ResponseWriter, r *http.Request) {
+	claims := middleware.GetClaims(r)
+	if claims == nil {
+		respondError(w, http.StatusUnauthorized, "Unauthorized", nil)
+		return
+	}
+	appID := chi.URLParam(r, "appId")
+	id, err := parseUUID(appID)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid app ID", nil)
+		return
+	}
+	var req struct {
+		OrganizationID int `json:"organization_id"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body", nil)
+		return
+	}
+	app, err := h.DB.GetAppByID(r.Context(), id)
+	if err != nil {
+		respondError(w, http.StatusNotFound, "App not found", nil)
+		return
+	}
+	if !h.canManageOrganization(r, claims.UserID, app.OrganizationID) || !h.canManageOrganization(r, claims.UserID, req.OrganizationID) {
+		respondError(w, http.StatusForbidden, "Organization admin access required", nil)
+		return
+	}
+	if err := h.DB.UpdateAppOrganization(r.Context(), id, req.OrganizationID); err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to transfer app", strPtr(err.Error()))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *AppHandler) canManageOrganization(r *http.Request, userID, orgID int) bool {
+	user, _ := h.DB.GetUserByID(r.Context(), userID)
+	if user != nil && user.IsAdmin {
+		return true
+	}
+	role, err := h.DB.GetOrganizationRole(r.Context(), userID, orgID)
+	return err == nil && role == "admin"
 }
 
 // ChannelHandler handles channel-related API endpoints.
@@ -285,4 +391,102 @@ func (h *OrganizationHandler) GetOrganizations(w http.ResponseWriter, r *http.Re
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{"organizations": result})
+}
+
+func (h *OrganizationHandler) CreateOrganization(w http.ResponseWriter, r *http.Request) {
+	claims := middleware.GetClaims(r)
+	if claims == nil {
+		respondError(w, http.StatusUnauthorized, "Unauthorized", nil)
+		return
+	}
+	var req struct {
+		Name string `json:"name"`
+		Type string `json:"organization_type"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body", nil)
+		return
+	}
+	if req.Type == "" {
+		req.Type = "team"
+	}
+	orgID, err := h.DB.CreateOrganization(r.Context(), req.Name, req.Type)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to create organization", strPtr(err.Error()))
+		return
+	}
+	if err := h.DB.AddUserToOrganization(r.Context(), claims.UserID, orgID, "admin"); err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to add organization owner", nil)
+		return
+	}
+	respondJSON(w, http.StatusCreated, map[string]interface{}{"id": orgID, "name": req.Name, "organization_type": req.Type})
+}
+
+func (h *OrganizationHandler) ListOrganizationUsers(w http.ResponseWriter, r *http.Request) {
+	orgID, ok := h.requireOrgAdmin(w, r)
+	if !ok {
+		return
+	}
+	users, err := h.DB.ListOrganizationUsers(r.Context(), orgID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to fetch organization users", nil)
+		return
+	}
+	result := make([]map[string]interface{}, 0, len(users))
+	for _, u := range users {
+		result = append(result, map[string]interface{}{
+			"id": u.ID, "email": u.Email, "name": u.Name, "role": u.Role,
+			"email_verified": u.EmailVerified, "is_admin": u.IsAdmin,
+			"created_at": u.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		})
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"users": result})
+}
+
+func (h *OrganizationHandler) AddOrganizationUser(w http.ResponseWriter, r *http.Request) {
+	orgID, ok := h.requireOrgAdmin(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Email string `json:"email"`
+		Role  string `json:"role"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body", nil)
+		return
+	}
+	if req.Role == "" {
+		req.Role = "member"
+	}
+	user, err := h.DB.GetUserByEmail(r.Context(), req.Email)
+	if err != nil {
+		respondError(w, http.StatusNotFound, "User not found", strPtr("Create the user first, then add them to the organization."))
+		return
+	}
+	if err := h.DB.AddUserToOrganization(r.Context(), user.ID, orgID, req.Role); err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to add user to organization", nil)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *OrganizationHandler) requireOrgAdmin(w http.ResponseWriter, r *http.Request) (int, bool) {
+	claims := middleware.GetClaims(r)
+	if claims == nil {
+		respondError(w, http.StatusUnauthorized, "Unauthorized", nil)
+		return 0, false
+	}
+	orgID, err := strconv.Atoi(chi.URLParam(r, "orgId"))
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid organization ID", nil)
+		return 0, false
+	}
+	user, _ := h.DB.GetUserByID(r.Context(), claims.UserID)
+	role, err := h.DB.GetOrganizationRole(r.Context(), claims.UserID, orgID)
+	if err != nil || (role != "admin" && (user == nil || !user.IsAdmin)) {
+		respondError(w, http.StatusForbidden, "Organization admin access required", nil)
+		return 0, false
+	}
+	return orgID, true
 }

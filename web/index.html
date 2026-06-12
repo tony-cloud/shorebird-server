@@ -31,8 +31,10 @@
                 Sign In
             </button>
         </form>
+        <a href="/auth/sso/login?mode=web" id="ssoLoginBtn" class="btn btn-outline" style="display:none;width:100%;justify-content:center;margin-top:12px;">Sign in with Casdoor</a>
         <p style="text-align:center;margin-top:16px;font-size:13px;color:var(--text-muted);">
-            No account? <a href="#" id="showRegister" style="color:var(--primary);">Register</a>
+            <a href="#" id="showPasswordReset" style="color:var(--primary);">Reset password</a>
+            <span id="registerPrompt"> · No account? <a href="#" id="showRegister" style="color:var(--primary);">Register</a></span>
         </p>
     </div>
 </div>
@@ -82,6 +84,9 @@
             </a>
             <a href="#users" data-page="users">
                 <span class="nav-icon">👥</span> Users
+            </a>
+            <a href="#organizations" data-page="organizations">
+                <span class="nav-icon">🏢</span> Organizations
             </a>
             <a href="#settings" data-page="settings">
                 <span class="nav-icon">⚙️</span> Settings
@@ -148,14 +153,103 @@
             </div>
         </section>
 
+        <section id="page-organizations" class="page-section">
+            <div class="card">
+                <div class="card-header">
+                    <h3>Organizations</h3>
+                    <button class="btn btn-primary" onclick="openCreateOrgModal()">+ New Organization</button>
+                </div>
+                <div class="card-body" id="organizationsTable"></div>
+            </div>
+            <div class="card" style="margin-top:20px;">
+                <div class="card-header"><h3>Organization Members</h3></div>
+                <div class="card-body" id="organizationMembersTable"></div>
+            </div>
+        </section>
+
+        <section id="page-app-detail" class="page-section">
+            <div class="card">
+                <div class="card-header">
+                    <h3 id="appDetailTitle">App</h3>
+                    <button class="btn btn-outline" onclick="navigate('apps')">Back</button>
+                </div>
+                <div class="card-body" style="padding:24px;">
+                    <div class="tab-bar">
+                        <button class="active" data-app-tab="releases" onclick="showAppTab('releases')">Releases</button>
+                        <button data-app-tab="insights" onclick="showAppTab('insights')">Insights</button>
+                        <button data-app-tab="collaborators" onclick="showAppTab('collaborators')">Collaborators</button>
+                        <button data-app-tab="tracks" onclick="showAppTab('tracks')">Tracks</button>
+                        <button data-app-tab="settings" onclick="showAppTab('settings')">Settings</button>
+                    </div>
+                    <div id="appTab-releases" class="app-tab"></div>
+                    <div id="appTab-insights" class="app-tab" style="display:none;"></div>
+                    <div id="appTab-collaborators" class="app-tab" style="display:none;"></div>
+                    <div id="appTab-tracks" class="app-tab" style="display:none;"></div>
+                    <div id="appTab-settings" class="app-tab" style="display:none;"></div>
+                </div>
+            </div>
+        </section>
+
+        <section id="page-release-detail" class="page-section">
+            <div class="card">
+                <div class="card-header">
+                    <h3 id="releaseDetailTitle">Release</h3>
+                    <button class="btn btn-outline" onclick="openAppPage(state.currentApp?.app_id)">Back</button>
+                </div>
+                <div class="card-body" style="padding:24px;">
+                    <div class="tab-bar">
+                        <button class="active" data-release-tab="overview" onclick="showReleaseTab('overview')">Overview</button>
+                        <button data-release-tab="insights" onclick="showReleaseTab('insights')">Insights</button>
+                        <button data-release-tab="artifacts" onclick="showReleaseTab('artifacts')">Artifacts</button>
+                        <button data-release-tab="settings" onclick="showReleaseTab('settings')">Settings</button>
+                    </div>
+                    <div id="releaseTab-overview" class="release-tab"></div>
+                    <div id="releaseTab-insights" class="release-tab" style="display:none;"></div>
+                    <div id="releaseTab-artifacts" class="release-tab" style="display:none;"></div>
+                    <div id="releaseTab-settings" class="release-tab" style="display:none;"></div>
+                </div>
+            </div>
+        </section>
+
         <!-- ================================================
              SETTINGS PAGE
              ================================================ -->
         <section id="page-settings" class="page-section">
             <div class="card">
+                <div class="card-header"><h3>Personal Settings</h3></div>
+                <div class="card-body" style="padding:24px;">
+                    <form id="changePasswordForm" style="max-width:520px;">
+                        <div class="form-group">
+                            <label for="currentPassword">Current Password</label>
+                            <input type="password" id="currentPassword" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="newPassword">New Password</label>
+                            <input type="password" id="newPassword" required minlength="6">
+                        </div>
+                        <button type="submit" class="btn btn-primary">Change Password</button>
+                    </form>
+                </div>
+            </div>
+            <div class="card">
                 <div class="card-header"><h3>Server Configuration</h3></div>
                 <div class="card-body" style="padding:24px;">
                     <div class="info-grid" id="serverInfo"></div>
+                </div>
+            </div>
+            <div class="card" style="margin-top:20px;">
+                <div class="card-header"><h3>Admin Settings</h3></div>
+                <div class="card-body" style="padding:24px;">
+                    <form id="adminSettingsForm" style="max-width:720px;">
+                        <div class="form-group"><label><input type="checkbox" id="settingRegistrationEnabled" style="width:auto;"> Enable password registration</label></div>
+                        <div class="form-group"><label><input type="checkbox" id="settingSsoRegistrationEnabled" style="width:auto;"> Enable SSO registration</label></div>
+                        <div class="form-group"><label><input type="checkbox" id="settingSsoOnlyRegistration" style="width:auto;"> SSO-only registration</label></div>
+                        <div class="form-group"><label for="casdoorEndpoint">Casdoor endpoint</label><input type="url" id="casdoorEndpoint" placeholder="https://casdoor.example.com"></div>
+                        <div class="form-group"><label for="casdoorClientId">Casdoor app ID</label><input type="text" id="casdoorClientId"></div>
+                        <div class="form-group"><label for="casdoorClientSecret">Casdoor app secret</label><input type="password" id="casdoorClientSecret" placeholder="Leave blank to keep current secret"></div>
+                        <div class="form-group"><label for="casdoorOrganization">Casdoor organization</label><input type="text" id="casdoorOrganization" placeholder="built-in"></div>
+                        <button type="submit" class="btn btn-primary">Save Settings</button>
+                    </form>
                 </div>
             </div>
             <div class="card" style="margin-top:20px;">
@@ -189,6 +283,10 @@
             <div class="form-group">
                 <label for="appDisplayName">Display Name</label>
                 <input type="text" id="appDisplayName" placeholder="My Flutter App" required>
+            </div>
+            <div class="form-group">
+                <label for="appOrganizationId">Organization</label>
+                <select id="appOrganizationId"></select>
             </div>
             <div class="modal-actions">
                 <button type="button" class="btn btn-outline" onclick="closeModal('createAppOverlay')">Cancel</button>
@@ -232,6 +330,74 @@
             <button class="btn btn-outline" onclick="closeModal('confirmModal')">Cancel</button>
             <button class="btn btn-danger" id="confirmBtn" onclick="executeConfirm()">Delete</button>
         </div>
+    </div>
+</div>
+
+<div id="passwordResetOverlay" class="modal-overlay">
+    <div class="modal">
+        <h3>Reset Password</h3>
+        <form id="passwordResetForm">
+            <div class="form-group">
+                <label for="resetEmail">Email</label>
+                <input type="email" id="resetEmail" placeholder="you@example.com" required>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-outline" onclick="closeModal('passwordResetOverlay')">Cancel</button>
+                <button type="submit" class="btn btn-primary">Send Reset Link</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div id="forcePasswordOverlay" class="modal-overlay">
+    <div class="modal">
+        <h3>Change Default Password</h3>
+        <form id="forcePasswordForm">
+            <div class="form-group">
+                <label for="forceNewPassword">New Password</label>
+                <input type="password" id="forceNewPassword" required minlength="6">
+            </div>
+            <div class="modal-actions">
+                <button type="submit" class="btn btn-primary">Update Password</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div id="createOrgOverlay" class="modal-overlay">
+    <div class="modal">
+        <h3>Create Organization</h3>
+        <form id="createOrgForm">
+            <div class="form-group">
+                <label for="orgName">Name</label>
+                <input type="text" id="orgName" placeholder="Team name" required>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-outline" onclick="closeModal('createOrgOverlay')">Cancel</button>
+                <button type="submit" class="btn btn-primary">Create</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div id="addOrgUserOverlay" class="modal-overlay">
+    <div class="modal">
+        <h3>Add Organization User</h3>
+        <form id="addOrgUserForm">
+            <input type="hidden" id="orgUserOrgId">
+            <div class="form-group">
+                <label for="orgUserEmail">Email</label>
+                <input type="email" id="orgUserEmail" required>
+            </div>
+            <div class="form-group">
+                <label for="orgUserRole">Role</label>
+                <select id="orgUserRole"><option value="member">Member</option><option value="admin">Admin</option></select>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-outline" onclick="closeModal('addOrgUserOverlay')">Cancel</button>
+                <button type="submit" class="btn btn-primary">Add User</button>
+            </div>
+        </form>
     </div>
 </div>
 

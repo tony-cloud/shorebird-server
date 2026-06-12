@@ -11,6 +11,8 @@ type Config struct {
 	DB      DBConfig
 	Storage StorageConfig
 	Auth    AuthConfig
+	Email   EmailConfig
+	Admin   AdminConfig
 	Redis   RedisConfig
 }
 
@@ -56,6 +58,22 @@ type AuthConfig struct {
 	TokenDuration time.Duration
 }
 
+// EmailConfig holds SMTP configuration for account emails.
+type EmailConfig struct {
+	Host     string
+	Port     string
+	Username string
+	Password string
+	From     string
+}
+
+// AdminConfig holds bootstrap admin configuration.
+type AdminConfig struct {
+	Email    string
+	Password string
+	Name     string
+}
+
 // RedisConfig holds Redis connection configuration.
 type RedisConfig struct {
 	Addr     string
@@ -94,6 +112,18 @@ func Load() *Config {
 		Auth: AuthConfig{
 			JWTSecret:     envOrDefault("JWT_SECRET", "change-me-in-production-use-a-long-random-string"),
 			TokenDuration: 24 * time.Hour,
+		},
+		Email: EmailConfig{
+			Host:     envOrDefault("SMTP_HOST", ""),
+			Port:     envOrDefault("SMTP_PORT", "587"),
+			Username: envOrDefault("SMTP_USERNAME", ""),
+			Password: envOrDefault("SMTP_PASSWORD", ""),
+			From:     envOrDefault("SMTP_FROM", "shorebird@localhost"),
+		},
+		Admin: AdminConfig{
+			Email:    envOrDefault("DEFAULT_ADMIN_EMAIL", "admin@example.com"),
+			Password: envOrDefault("DEFAULT_ADMIN_PASSWORD", "admin123"),
+			Name:     envOrDefault("DEFAULT_ADMIN_NAME", "Administrator"),
 		},
 		Redis: RedisConfig{
 			Addr:     envOrDefault("REDIS_ADDR", "localhost:6379"),

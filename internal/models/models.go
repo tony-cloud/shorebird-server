@@ -17,16 +17,17 @@ type App struct {
 
 // AppMetadata is the full app info returned by GET /apps.
 type AppMetadata struct {
-	AppID                string                         `json:"app_id"`
-	DisplayName          string                         `json:"display_name"`
-	LatestReleaseVersion *string                        `json:"latest_release_version"`
-	LatestPatchNumber    *int                           `json:"latest_patch_number"`
-	CreatedAt            time.Time                      `json:"created_at"`
-	UpdatedAt            time.Time                      `json:"updated_at"`
-	Platforms            []string                       `json:"platforms"`
-	LatestReleases       map[string]LatestRelease       `json:"latest_releases"`
-	PendingReleases      map[string]PendingRelease      `json:"pending_releases"`
-	IconURL              *string                        `json:"icon_url"`
+	AppID                string                    `json:"app_id"`
+	OrganizationID       int                       `json:"organization_id,omitempty"`
+	DisplayName          string                    `json:"display_name"`
+	LatestReleaseVersion *string                   `json:"latest_release_version"`
+	LatestPatchNumber    *int                      `json:"latest_patch_number"`
+	CreatedAt            time.Time                 `json:"created_at"`
+	UpdatedAt            time.Time                 `json:"updated_at"`
+	Platforms            []string                  `json:"platforms"`
+	LatestReleases       map[string]LatestRelease  `json:"latest_releases"`
+	PendingReleases      map[string]PendingRelease `json:"pending_releases"`
+	IconURL              *string                   `json:"icon_url"`
 }
 
 // LatestRelease represents the latest analyzed release per platform.
@@ -51,16 +52,16 @@ type Channel struct {
 
 // Release represents a release of an application.
 type Release struct {
-	ID               int                          `json:"id"`
-	AppID            uuid.UUID                    `json:"app_id"`
-	Version          string                       `json:"version"`
-	FlutterRevision  string                       `json:"flutter_revision"`
-	FlutterVersion   *string                      `json:"flutter_version"`
-	DisplayName      *string                      `json:"display_name"`
-	Notes            *string                      `json:"notes"`
-	PlatformStatuses map[string]string            `json:"platform_statuses"`
-	CreatedAt        time.Time                    `json:"created_at"`
-	UpdatedAt        time.Time                    `json:"updated_at"`
+	ID               int               `json:"id"`
+	AppID            uuid.UUID         `json:"app_id"`
+	Version          string            `json:"version"`
+	FlutterRevision  string            `json:"flutter_revision"`
+	FlutterVersion   *string           `json:"flutter_version"`
+	DisplayName      *string           `json:"display_name"`
+	Notes            *string           `json:"notes"`
+	PlatformStatuses map[string]string `json:"platform_statuses"`
+	CreatedAt        time.Time         `json:"created_at"`
+	UpdatedAt        time.Time         `json:"updated_at"`
 }
 
 // ReleaseStatus values.
@@ -72,11 +73,11 @@ const (
 
 // ReleasePlatform values.
 const (
-	PlatformAndroid   = "android"
-	PlatformIOS       = "ios"
-	PlatformMacOS     = "macos"
-	PlatformWindows   = "windows"
-	PlatformLinux     = "linux"
+	PlatformAndroid = "android"
+	PlatformIOS     = "ios"
+	PlatformMacOS   = "macos"
+	PlatformWindows = "windows"
+	PlatformLinux   = "linux"
 )
 
 // ReleaseArtifact represents metadata about a release artifact.
@@ -95,18 +96,18 @@ type ReleaseArtifact struct {
 
 // Patch represents a patch (hotfix update) for a release.
 type Patch struct {
-	ID      int       `json:"id"`
-	Number  int       `json:"number"`
-	Notes   *string   `json:"notes"`
+	ID     int     `json:"id"`
+	Number int     `json:"number"`
+	Notes  *string `json:"notes"`
 }
 
 // ReleasePatch is the join between releases and patches.
 type ReleasePatch struct {
-	ID           int       `json:"id"`
-	ReleaseID    int       `json:"release_id"`
-	PatchID      int       `json:"patch_id"`
-	PatchNumber  int       `json:"patch_number"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID          int       `json:"id"`
+	ReleaseID   int       `json:"release_id"`
+	PatchID     int       `json:"patch_id"`
+	PatchNumber int       `json:"patch_number"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // PatchArtifact represents metadata about a patch artifact.
@@ -122,22 +123,22 @@ type PatchArtifact struct {
 
 // PatchCheckRequest is the POST /patches/check request body.
 type PatchCheckRequest struct {
-	ReleaseVersion     string `json:"release_version"`
-	PatchNumber        *int   `json:"patch_number"`
+	ReleaseVersion     string  `json:"release_version"`
+	PatchNumber        *int    `json:"patch_number"`
 	PatchHash          *string `json:"patch_hash"`
-	Platform           string `json:"platform"`
-	Arch               string `json:"arch"`
-	AppID              string `json:"app_id"`
-	Channel            string `json:"channel"`
+	Platform           string  `json:"platform"`
+	Arch               string  `json:"arch"`
+	AppID              string  `json:"app_id"`
+	Channel            string  `json:"channel"`
 	ClientID           *string `json:"client_id"`
 	CurrentPatchNumber *int    `json:"current_patch_number"`
 }
 
 // PatchCheckResponse is the POST /patches/check response body.
 type PatchCheckResponse struct {
-	PatchAvailable          bool                  `json:"patch_available"`
-	Patch                   *PatchCheckMetadata   `json:"patch"`
-	RolledBackPatchNumbers  []int                 `json:"rolled_back_patch_numbers"`
+	PatchAvailable         bool                `json:"patch_available"`
+	Patch                  *PatchCheckMetadata `json:"patch"`
+	RolledBackPatchNumbers []int               `json:"rolled_back_patch_numbers"`
 }
 
 // PatchCheckMetadata is the patch metadata returned in patch check.
@@ -283,9 +284,9 @@ type CreatePatchArtifactResponse struct {
 
 // UpdateReleaseRequest is the PATCH /releases/{id} request body.
 type UpdateReleaseRequest struct {
-	Status   string                  `json:"status"`
-	Platform string                  `json:"platform"`
-	Metadata map[string]interface{}  `json:"metadata"`
+	Status   string                 `json:"status"`
+	Platform string                 `json:"platform"`
+	Metadata map[string]interface{} `json:"metadata"`
 }
 
 // PromotePatchRequest is the POST /patches/promote request body.
@@ -318,7 +319,8 @@ type AuthTokenRequest struct {
 
 // AuthTokenResponse is the login response.
 type AuthTokenResponse struct {
-	Token        string `json:"token"`
-	RefreshToken string `json:"refresh_token"`
-	Email        string `json:"email"`
+	Token              string `json:"token"`
+	RefreshToken       string `json:"refresh_token"`
+	Email              string `json:"email"`
+	MustChangePassword bool   `json:"must_change_password,omitempty"`
 }

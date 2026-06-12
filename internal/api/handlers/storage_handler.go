@@ -3,6 +3,7 @@ package handlers
 import (
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/shorebird-server/internal/storage"
@@ -29,7 +30,24 @@ func (h *StorageHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		ct = "application/octet-stream"
 	}
 
-	if err := h.store.UploadObject(r.Context(), key, r.Body, r.ContentLength, ct, isPublic); err != nil {
+	body := io.Reader(r.Body)
+	size := r.ContentLength
+	if strings.HasPrefix(ct, "multipart/form-data") {
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			respondError(w, http.StatusBadRequest, "Upload failed: missing multipart file", nil)
+			return
+		}
+		defer file.Close()
+		body = file
+		size = header.Size
+		ct = header.Header.Get("Content-Type")
+		if ct == "" {
+			ct = "application/octet-stream"
+		}
+	}
+
+	if err := h.store.UploadObject(r.Context(), key, body, size, ct, isPublic); err != nil {
 		respondError(w, http.StatusInternalServerError, "Upload failed: "+err.Error(), nil)
 		return
 	}

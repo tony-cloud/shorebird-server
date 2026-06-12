@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -27,6 +28,7 @@ func parseIntParam(r *http.Request, name string) (int, error) {
 type ReleaseHandler struct {
 	DB      db.Store
 	Storage storage.Store
+	BaseURL string
 }
 
 // GetReleases handles GET /api/v1/apps/{appId}/releases
@@ -130,6 +132,19 @@ func (h *ReleaseHandler) UpdateRelease(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (h *ReleaseHandler) DeleteRelease(w http.ResponseWriter, r *http.Request) {
+	releaseID, err := parseIntParam(r, "releaseId")
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid release ID", nil)
+		return
+	}
+	if err := h.DB.DeleteRelease(r.Context(), releaseID); err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to delete release", strPtr(err.Error()))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // CreateReleaseArtifact handles POST /api/v1/apps/{appId}/releases/{releaseId}/artifacts
 func (h *ReleaseHandler) CreateReleaseArtifact(w http.ResponseWriter, r *http.Request) {
 	appID := chi.URLParam(r, "appId")
@@ -224,7 +239,7 @@ func (h *ReleaseHandler) GetReleaseArtifacts(w http.ResponseWriter, r *http.Requ
 	var result []models.ReleaseArtifact
 	for _, a := range artifacts {
 		// Build a download URL for the artifact
-		downloadURL := fmt.Sprintf("http://localhost:8080/storage/dl/releases/%s", a.StorageKey)
+		downloadURL := fmt.Sprintf("%s/storage/dl/releases/%s", strings.TrimRight(h.BaseURL, "/"), a.StorageKey)
 		result = append(result, models.ReleaseArtifact{
 			ID:              a.ID,
 			ReleaseID:       a.ReleaseID,

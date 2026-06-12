@@ -15,6 +15,10 @@ CREATE TABLE users (
     email TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL,
     password_hash TEXT NOT NULL,
+    email_verified BOOLEAN NOT NULL DEFAULT false,
+    is_admin BOOLEAN NOT NULL DEFAULT false,
+    must_change_password BOOLEAN NOT NULL DEFAULT false,
+    auth_provider TEXT NOT NULL DEFAULT 'password',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -26,6 +30,33 @@ CREATE TABLE organization_memberships (
     role TEXT NOT NULL DEFAULT 'member',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(user_id, organization_id)
+);
+
+-- Server settings
+CREATE TABLE settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO settings (key, value) VALUES
+    ('registration_enabled', 'true'),
+    ('sso_registration_enabled', 'true'),
+    ('sso_only_registration', 'false'),
+    ('casdoor_endpoint', ''),
+    ('casdoor_client_id', ''),
+    ('casdoor_client_secret', ''),
+    ('casdoor_organization', 'built-in');
+
+-- Email verification and password reset tokens
+CREATE TABLE account_tokens (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    token_type TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    used_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- Apps table
@@ -162,6 +193,7 @@ CREATE INDEX idx_patch_events_client ON patch_events(app_id, client_id);
 CREATE INDEX idx_rolled_back_release ON rolled_back_patches(release_id);
 CREATE INDEX idx_patch_target_devices_patch ON patch_target_devices(patch_id);
 CREATE INDEX idx_patch_target_devices_client ON patch_target_devices(patch_id, client_id);
+CREATE INDEX idx_account_tokens_token ON account_tokens(token_hash, token_type);
 
 -- +goose StatementEnd
 
@@ -178,6 +210,8 @@ DROP TABLE IF EXISTS release_platform_statuses CASCADE;
 DROP TABLE IF EXISTS releases CASCADE;
 DROP TABLE IF EXISTS channels CASCADE;
 DROP TABLE IF EXISTS apps CASCADE;
+DROP TABLE IF EXISTS account_tokens CASCADE;
+DROP TABLE IF EXISTS settings CASCADE;
 DROP TABLE IF EXISTS organization_memberships CASCADE;
 DROP TABLE IF EXISTS users CASCADE;
 DROP TABLE IF EXISTS organizations CASCADE;

@@ -75,14 +75,28 @@ type Store interface {
 
 	// --- Users ---
 	CreateUser(ctx context.Context, email, name, passwordHash string) (int, error)
+	EnsureDefaultAdmin(ctx context.Context, email, name, passwordHash string) (bool, error)
 	GetUserByEmail(ctx context.Context, email string) (*UserRow, error)
 	GetUserByID(ctx context.Context, id int) (*UserRow, error)
 	ListAllUsers(ctx context.Context) ([]UserListRow, error)
+	UpdateUserPassword(ctx context.Context, userID int, passwordHash string) error
+	ClearMustChangePassword(ctx context.Context, userID int) error
+	MarkUserEmailVerified(ctx context.Context, userID int) error
+	SetUserAdmin(ctx context.Context, userID int, isAdmin bool) error
 
 	// --- Organizations ---
 	CreateOrganization(ctx context.Context, name, orgType string) (int, error)
 	GetOrganizationsByUserID(ctx context.Context, userID int) ([]OrgMembershipRow, error)
 	AddUserToOrganization(ctx context.Context, userID, orgID int, role string) error
+	ListOrganizationUsers(ctx context.Context, orgID int) ([]OrganizationUserRow, error)
+	GetOrganizationRole(ctx context.Context, userID, orgID int) (string, error)
+
+	// --- Settings and account tokens ---
+	GetSetting(ctx context.Context, key string) (string, error)
+	SetSetting(ctx context.Context, key, value string) error
+	ListSettings(ctx context.Context) (map[string]string, error)
+	CreateAccountToken(ctx context.Context, userID int, tokenHash, tokenType string, expiresAt time.Time) error
+	ConsumeAccountToken(ctx context.Context, tokenHash, tokenType string) (*AccountTokenRow, error)
 
 	// --- Apps ---
 	CreateApp(ctx context.Context, orgID int, displayName string) (*AppRow, error)
@@ -90,6 +104,7 @@ type Store interface {
 	GetAppByID(ctx context.Context, appID uuid.UUID) (*AppRow, error)
 	GetAppByIDString(ctx context.Context, appID string) (*AppRow, error)
 	DeleteApp(ctx context.Context, appID uuid.UUID) error
+	UpdateAppOrganization(ctx context.Context, appID uuid.UUID, orgID int) error
 	GetAppsByUserID(ctx context.Context, userID int) ([]AppRow, error)
 
 	// --- Channels ---
@@ -104,6 +119,7 @@ type Store interface {
 	GetReleasesByAppID(ctx context.Context, appID uuid.UUID, sideloadableOnly bool) ([]ReleaseRow, error)
 	UpdateReleasePlatformStatus(ctx context.Context, releaseID int, platform, status string, metadata map[string]interface{}) error
 	GetReleasePlatformStatuses(ctx context.Context, releaseID int) (map[string]string, error)
+	DeleteRelease(ctx context.Context, releaseID int) error
 
 	// --- Release Artifacts ---
 	CreateReleaseArtifact(ctx context.Context, releaseID int, arch, platform, hash, storageKey string, size int64, canSideload bool, podfileLockHash *string) (*ArtifactRow, error)
@@ -139,11 +155,15 @@ type Store interface {
 
 // UserRow represents a user row from the database.
 type UserRow struct {
-	ID           int
-	Email        string
-	Name         string
-	PasswordHash string
-	CreatedAt    ShorebirdTime
+	ID                 int
+	Email              string
+	Name               string
+	PasswordHash       string
+	EmailVerified      bool
+	IsAdmin            bool
+	MustChangePassword bool
+	AuthProvider       string
+	CreatedAt          ShorebirdTime
 }
 
 // OrgMembershipRow represents an organization membership query result.
@@ -152,6 +172,18 @@ type OrgMembershipRow struct {
 	OrgName string
 	OrgType string
 	Role    string
+}
+
+// OrganizationUserRow is used for organization member listing.
+type OrganizationUserRow struct {
+	ID                 int
+	Email              string
+	Name               string
+	Role               string
+	EmailVerified      bool
+	IsAdmin            bool
+	MustChangePassword bool
+	CreatedAt          ShorebirdTime
 }
 
 // AppRow represents an app row.
@@ -246,9 +278,22 @@ type PatchArtifactRow struct {
 
 // UserListRow is used by the admin user listing endpoint.
 type UserListRow struct {
+	ID                 int
+	Email              string
+	Name               string
+	CreatedAt          ShorebirdTime
+	Role               string
+	EmailVerified      bool
+	IsAdmin            bool
+	MustChangePassword bool
+}
+
+// AccountTokenRow represents a verification or password reset token.
+type AccountTokenRow struct {
 	ID        int
-	Email     string
-	Name      string
+	UserID    int
+	TokenType string
+	ExpiresAt ShorebirdTime
+	UsedAt    NullShorebirdTime
 	CreatedAt ShorebirdTime
-	Role      string
 }

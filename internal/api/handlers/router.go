@@ -8,14 +8,15 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
-	authpkg "github.com/shorebird-server/internal/auth"
 	"github.com/shorebird-server/internal/api/middleware"
+	authpkg "github.com/shorebird-server/internal/auth"
 	"github.com/shorebird-server/internal/db"
+	"github.com/shorebird-server/internal/email"
 	"github.com/shorebird-server/internal/storage"
 )
 
 // NewRouter creates the HTTP router with all API routes.
-func NewRouter(authService *authpkg.Service, database db.Store, store storage.Store) *chi.Mux {
+func NewRouter(authService *authpkg.Service, database db.Store, store storage.Store, mailer *email.Mailer, baseURL string) *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(chimw.Logger)
 	r.Use(chimw.Recoverer)
@@ -31,12 +32,12 @@ func NewRouter(authService *authpkg.Service, database db.Store, store storage.St
 	}))
 
 	// Initialize handlers
-	authHandler := &AuthHandler{DB: database, AuthService: authService}
-	userHandler := &UserHandler{DB: database}
+	authHandler := &AuthHandler{DB: database, AuthService: authService, Mailer: mailer, BaseURL: baseURL}
+	userHandler := &UserHandler{DB: database, BaseURL: baseURL}
 	appHandler := &AppHandler{DB: database}
 	channelHandler := &ChannelHandler{DB: database}
 	orgHandler := &OrganizationHandler{DB: database}
-	releaseHandler := &ReleaseHandler{DB: database, Storage: store}
+	releaseHandler := &ReleaseHandler{DB: database, Storage: store, BaseURL: baseURL}
 	patchHandler := &PatchHandler{DB: database, Storage: store}
 	deviceHandler := &DeviceHandler{DB: database, Storage: store}
 	diagHandler := &DiagnosticsHandler{}
@@ -44,7 +45,7 @@ func NewRouter(authService *authpkg.Service, database db.Store, store storage.St
 	storageHandler := NewStorageHandler(store)
 
 	// Auth middleware
-	authMw := middleware.AuthMiddleware(authService)
+	authMw := middleware.AuthMiddleware(authService, database)
 
 	// --- Local storage upload/download (used when STORAGE_DRIVER=local) ---
 	r.Route("/storage", func(r chi.Router) {
@@ -56,8 +57,16 @@ func NewRouter(authService *authpkg.Service, database db.Store, store storage.St
 	r.Route("/auth", func(r chi.Router) {
 		r.Get("/login", authHandler.LoginPage)
 		r.Post("/login", authHandler.LoginPage)
+		r.Get("/public-settings", authHandler.PublicSettings)
 		r.Post("/token", authHandler.Login)
 		r.Post("/register", authHandler.Register)
+		r.Post("/verify-email/request", authHandler.RequestVerificationEmail)
+		r.Get("/verify-email", authHandler.VerifyEmail)
+		r.Post("/password-reset/request", authHandler.RequestPasswordReset)
+		r.Get("/password-reset", authHandler.PasswordResetPage)
+		r.Post("/password-reset", authHandler.ResetPassword)
+		r.Get("/sso/login", authHandler.SSOLogin)
+		r.Get("/sso/callback", authHandler.SSOCallback)
 		r.With(authMw).Post("/refresh", authHandler.Refresh)
 	})
 
@@ -73,15 +82,20 @@ func NewRouter(authService *authpkg.Service, database db.Store, store storage.St
 
 			// Users
 			r.Get("/users/me", userHandler.GetCurrentUser)
+			r.Patch("/users/me/password", userHandler.UpdatePassword)
 			r.Post("/users", userHandler.CreateUser)
 
 			// Organizations
 			r.Get("/organizations", orgHandler.GetOrganizations)
+			r.Post("/organizations", orgHandler.CreateOrganization)
+			r.Get("/organizations/{orgId}/users", orgHandler.ListOrganizationUsers)
+			r.Post("/organizations/{orgId}/users", orgHandler.AddOrganizationUser)
 
 			// Apps
 			r.Get("/apps", appHandler.GetApps)
 			r.Post("/apps", appHandler.CreateApp)
 			r.Delete("/apps/{appId}", appHandler.DeleteApp)
+			r.Patch("/apps/{appId}/transfer", appHandler.TransferApp)
 
 			// Channels
 			r.Get("/apps/{appId}/channels", channelHandler.GetChannels)
@@ -91,6 +105,7 @@ func NewRouter(authService *authpkg.Service, database db.Store, store storage.St
 			r.Get("/apps/{appId}/releases", releaseHandler.GetReleases)
 			r.Post("/apps/{appId}/releases", releaseHandler.CreateRelease)
 			r.Patch("/apps/{appId}/releases/{releaseId}", releaseHandler.UpdateRelease)
+			r.Delete("/apps/{appId}/releases/{releaseId}", releaseHandler.DeleteRelease)
 
 			// Release artifacts
 			r.Post("/apps/{appId}/releases/{releaseId}/artifacts", releaseHandler.CreateReleaseArtifact)
@@ -116,6 +131,10 @@ func NewRouter(authService *authpkg.Service, database db.Store, store storage.St
 
 			// Admin: user listing
 			r.Get("/admin/users", adminHandler.ListUsers)
+			r.Post("/admin/users/{userId}/verify-email", adminHandler.VerifyUserEmail)
+			r.Post("/admin/users/{userId}/admin", adminHandler.SetUserAdmin)
+			r.Get("/admin/settings", adminHandler.GetSettings)
+			r.Put("/admin/settings", adminHandler.UpdateSettings)
 
 			// Admin: targeted device patching
 			r.Post("/admin/patches/{patchId}/target-devices", adminHandler.AddTargetDevice)

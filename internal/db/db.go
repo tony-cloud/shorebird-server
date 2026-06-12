@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -39,8 +40,6 @@ func (db *PgStore) Close() {
 	db.pool.Close()
 }
 
-
-
 // Exec is a convenience wrapper for pool.Exec.
 func (db *PgStore) exec(ctx context.Context, sql string, args ...interface{}) (pgconn.CommandTag, error) {
 	return db.pool.Exec(ctx, sql, args...)
@@ -62,19 +61,47 @@ func (db *PgStore) query(ctx context.Context, sql string, args ...interface{}) (
 func (db *PgStore) CreateUser(ctx context.Context, email, name, passwordHash string) (int, error) {
 	var id int
 	err := db.queryRow(ctx,
-		`INSERT INTO users (email, name, password_hash) VALUES ($1, $2, $3) RETURNING id`,
+		`INSERT INTO users (email, name, password_hash, is_admin) VALUES ($1, $2, $3, NOT EXISTS(SELECT 1 FROM users)) RETURNING id`,
 		email, name, passwordHash,
 	).Scan(&id)
 	return id, err
+}
+
+func (db *PgStore) EnsureDefaultAdmin(ctx context.Context, email, name, passwordHash string) (bool, error) {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	var id int
+	err = tx.QueryRow(ctx,
+		`INSERT INTO users (email, name, password_hash, email_verified, is_admin, must_change_password, auth_provider)
+		 VALUES ($1, $2, $3, true, true, true, 'password')
+		 ON CONFLICT (email) DO NOTHING
+		 RETURNING id`, email, name, passwordHash).Scan(&id)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return false, tx.Commit(ctx)
+		}
+		return false, err
+	}
+	var orgID int
+	if err := tx.QueryRow(ctx, `INSERT INTO organizations (name, type) VALUES ($1, 'team') RETURNING id`, name+"'s Org").Scan(&orgID); err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO organization_memberships (user_id, organization_id, role) VALUES ($1, $2, 'admin')`, id, orgID); err != nil {
+		return false, err
+	}
+	return true, tx.Commit(ctx)
 }
 
 // GetUserByEmail retrieves a user by email.
 func (db *PgStore) GetUserByEmail(ctx context.Context, email string) (*UserRow, error) {
 	row := &UserRow{}
 	err := db.queryRow(ctx,
-		`SELECT id, email, name, password_hash, created_at FROM users WHERE email = $1`,
+		`SELECT id, email, name, password_hash, email_verified, is_admin, must_change_password, auth_provider, created_at FROM users WHERE email = $1`,
 		email,
-	).Scan(&row.ID, &row.Email, &row.Name, &row.PasswordHash, &row.CreatedAt)
+	).Scan(&row.ID, &row.Email, &row.Name, &row.PasswordHash, &row.EmailVerified, &row.IsAdmin, &row.MustChangePassword, &row.AuthProvider, &row.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -85,13 +112,33 @@ func (db *PgStore) GetUserByEmail(ctx context.Context, email string) (*UserRow, 
 func (db *PgStore) GetUserByID(ctx context.Context, id int) (*UserRow, error) {
 	row := &UserRow{}
 	err := db.queryRow(ctx,
-		`SELECT id, email, name, password_hash, created_at FROM users WHERE id = $1`,
+		`SELECT id, email, name, password_hash, email_verified, is_admin, must_change_password, auth_provider, created_at FROM users WHERE id = $1`,
 		id,
-	).Scan(&row.ID, &row.Email, &row.Name, &row.PasswordHash, &row.CreatedAt)
+	).Scan(&row.ID, &row.Email, &row.Name, &row.PasswordHash, &row.EmailVerified, &row.IsAdmin, &row.MustChangePassword, &row.AuthProvider, &row.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
 	return row, nil
+}
+
+func (db *PgStore) UpdateUserPassword(ctx context.Context, userID int, passwordHash string) error {
+	_, err := db.exec(ctx, `UPDATE users SET password_hash = $1, must_change_password = false WHERE id = $2`, passwordHash, userID)
+	return err
+}
+
+func (db *PgStore) ClearMustChangePassword(ctx context.Context, userID int) error {
+	_, err := db.exec(ctx, `UPDATE users SET must_change_password = false WHERE id = $1`, userID)
+	return err
+}
+
+func (db *PgStore) MarkUserEmailVerified(ctx context.Context, userID int) error {
+	_, err := db.exec(ctx, `UPDATE users SET email_verified = true WHERE id = $1`, userID)
+	return err
+}
+
+func (db *PgStore) SetUserAdmin(ctx context.Context, userID int, isAdmin bool) error {
+	_, err := db.exec(ctx, `UPDATE users SET is_admin = $1 WHERE id = $2`, isAdmin, userID)
+	return err
 }
 
 // --- Organization queries ---
@@ -130,14 +177,41 @@ func (db *PgStore) GetOrganizationsByUserID(ctx context.Context, userID int) ([]
 	return result, nil
 }
 
-
 // AddUserToOrganization adds a user to an organization.
 func (db *PgStore) AddUserToOrganization(ctx context.Context, userID, orgID int, role string) error {
 	_, err := db.exec(ctx,
 		`INSERT INTO organization_memberships (user_id, organization_id, role)
-		 VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+		 VALUES ($1, $2, $3) ON CONFLICT (user_id, organization_id) DO UPDATE SET role = EXCLUDED.role`,
 		userID, orgID, role)
 	return err
+}
+
+func (db *PgStore) ListOrganizationUsers(ctx context.Context, orgID int) ([]OrganizationUserRow, error) {
+	rows, err := db.query(ctx,
+		`SELECT u.id, u.email, u.name, om.role, u.email_verified, u.is_admin, u.must_change_password, u.created_at
+		 FROM users u
+		 JOIN organization_memberships om ON u.id = om.user_id
+		 WHERE om.organization_id = $1
+		 ORDER BY u.email`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []OrganizationUserRow
+	for rows.Next() {
+		var r OrganizationUserRow
+		if err := rows.Scan(&r.ID, &r.Email, &r.Name, &r.Role, &r.EmailVerified, &r.IsAdmin, &r.MustChangePassword, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		result = append(result, r)
+	}
+	return result, nil
+}
+
+func (db *PgStore) GetOrganizationRole(ctx context.Context, userID, orgID int) (string, error) {
+	var role string
+	err := db.queryRow(ctx, `SELECT role FROM organization_memberships WHERE user_id = $1 AND organization_id = $2`, userID, orgID).Scan(&role)
+	return role, err
 }
 
 // --- App queries ---
@@ -205,6 +279,11 @@ func (db *PgStore) DeleteApp(ctx context.Context, appID uuid.UUID) error {
 	return err
 }
 
+func (db *PgStore) UpdateAppOrganization(ctx context.Context, appID uuid.UUID, orgID int) error {
+	_, err := db.exec(ctx, `UPDATE apps SET organization_id = $1, updated_at = NOW() WHERE id = $2`, orgID, appID)
+	return err
+}
+
 // GetAppsByUserID returns all apps the user has access to via org memberships.
 func (db *PgStore) GetAppsByUserID(ctx context.Context, userID int) ([]AppRow, error) {
 	rows, err := db.query(ctx,
@@ -228,7 +307,6 @@ func (db *PgStore) GetAppsByUserID(ctx context.Context, userID int) ([]AppRow, e
 	}
 	return result, nil
 }
-
 
 // --- Channel queries ---
 
@@ -278,7 +356,6 @@ func (db *PgStore) GetChannelByAppIDAndName(ctx context.Context, appID uuid.UUID
 	}
 	return row, nil
 }
-
 
 // --- Release queries ---
 
@@ -378,6 +455,10 @@ func (db *PgStore) GetReleasePlatformStatuses(ctx context.Context, releaseID int
 	return result, nil
 }
 
+func (db *PgStore) DeleteRelease(ctx context.Context, releaseID int) error {
+	_, err := db.exec(ctx, `DELETE FROM releases WHERE id = $1`, releaseID)
+	return err
+}
 
 // --- Release artifact queries ---
 
@@ -429,7 +510,6 @@ func (db *PgStore) GetReleaseArtifacts(ctx context.Context, releaseID int, arch,
 	}
 	return result, nil
 }
-
 
 // --- Patch queries ---
 
@@ -551,7 +631,6 @@ func (db *PgStore) CreatePatchArtifact(ctx context.Context, patchID int, arch, p
 	return row, nil
 }
 
-
 // --- Patch events ---
 
 // InsertPatchEvent records a patch lifecycle event.
@@ -649,6 +728,7 @@ func (db *PgStore) ListAllUsers(ctx context.Context) ([]UserListRow, error) {
 	rows, err := db.query(ctx,
 		`SELECT u.id, u.email, u.name, u.created_at,
 		        COALESCE(string_agg(DISTINCT om.role, ', '), '') as roles
+		        , u.email_verified, u.is_admin, u.must_change_password
 		 FROM users u
 		 LEFT JOIN organization_memberships om ON u.id = om.user_id
 		 GROUP BY u.id
@@ -661,7 +741,7 @@ func (db *PgStore) ListAllUsers(ctx context.Context) ([]UserListRow, error) {
 	var result []UserListRow
 	for rows.Next() {
 		var r UserListRow
-		if err := rows.Scan(&r.ID, &r.Email, &r.Name, &r.CreatedAt, &r.Role); err != nil {
+		if err := rows.Scan(&r.ID, &r.Email, &r.Name, &r.CreatedAt, &r.Role, &r.EmailVerified, &r.IsAdmin, &r.MustChangePassword); err != nil {
 			return nil, err
 		}
 		result = append(result, r)
@@ -669,3 +749,64 @@ func (db *PgStore) ListAllUsers(ctx context.Context) ([]UserListRow, error) {
 	return result, nil
 }
 
+func (db *PgStore) GetSetting(ctx context.Context, key string) (string, error) {
+	var value string
+	err := db.queryRow(ctx, `SELECT value FROM settings WHERE key = $1`, key).Scan(&value)
+	return value, err
+}
+
+func (db *PgStore) SetSetting(ctx context.Context, key, value string) error {
+	_, err := db.exec(ctx,
+		`INSERT INTO settings (key, value, updated_at) VALUES ($1, $2, NOW())
+		 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+		key, value)
+	return err
+}
+
+func (db *PgStore) ListSettings(ctx context.Context) (map[string]string, error) {
+	rows, err := db.query(ctx, `SELECT key, value FROM settings`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := map[string]string{}
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return nil, err
+		}
+		result[key] = value
+	}
+	return result, nil
+}
+
+func (db *PgStore) CreateAccountToken(ctx context.Context, userID int, tokenHash, tokenType string, expiresAt time.Time) error {
+	_, err := db.exec(ctx,
+		`INSERT INTO account_tokens (user_id, token_hash, token_type, expires_at) VALUES ($1, $2, $3, $4)`,
+		userID, tokenHash, tokenType, expiresAt.UTC())
+	return err
+}
+
+func (db *PgStore) ConsumeAccountToken(ctx context.Context, tokenHash, tokenType string) (*AccountTokenRow, error) {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	row := &AccountTokenRow{}
+	err = tx.QueryRow(ctx,
+		`SELECT id, user_id, token_type, expires_at, used_at, created_at
+		 FROM account_tokens
+		 WHERE token_hash = $1 AND token_type = $2 AND used_at IS NULL AND expires_at > NOW()`,
+		tokenHash, tokenType).Scan(&row.ID, &row.UserID, &row.TokenType, &row.ExpiresAt, &row.UsedAt, &row.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE account_tokens SET used_at = NOW() WHERE id = $1`, row.ID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return row, nil
+}

@@ -61,8 +61,8 @@ func (h *AdminHandler) GetTargetDevices(w http.ResponseWriter, r *http.Request) 
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"patch_id":     patchID,
-		"client_ids":   devices,
+		"patch_id":   patchID,
+		"client_ids": devices,
 	})
 }
 
@@ -78,9 +78,7 @@ func (h *AdminHandler) GetPatchEvents(w http.ResponseWriter, r *http.Request) {
 
 // ListUsers handles GET /api/v1/admin/users (admin convenience endpoint)
 func (h *AdminHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
-	claims := middleware.GetClaims(r)
-	if claims == nil {
-		respondError(w, http.StatusUnauthorized, "Unauthorized", nil)
+	if !h.requireAdmin(w, r) {
 		return
 	}
 
@@ -88,18 +86,19 @@ func (h *AdminHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		respondJSON(w, http.StatusOK, map[string]interface{}{
 			"message": "Admin endpoints available",
-			"user":    claims.Email,
 			"users":   []interface{}{},
 		})
 		return
 	}
 
 	type userEntry struct {
-		ID        int    `json:"id"`
-		Email     string `json:"email"`
-		Name      string `json:"name"`
-		Role      string `json:"role"`
-		CreatedAt string `json:"created_at"`
+		ID            int    `json:"id"`
+		Email         string `json:"email"`
+		Name          string `json:"name"`
+		Role          string `json:"role"`
+		CreatedAt     string `json:"created_at"`
+		EmailVerified bool   `json:"email_verified"`
+		IsAdmin       bool   `json:"is_admin"`
 	}
 
 	result := make([]userEntry, 0, len(users))
@@ -109,15 +108,127 @@ func (h *AdminHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 			role = "member"
 		}
 		result = append(result, userEntry{
-			ID:        u.ID,
-			Email:     u.Email,
-			Name:      u.Name,
-			Role:      role,
-			CreatedAt: u.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			ID:            u.ID,
+			Email:         u.Email,
+			Name:          u.Name,
+			Role:          role,
+			CreatedAt:     u.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			EmailVerified: u.EmailVerified,
+			IsAdmin:       u.IsAdmin,
 		})
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"users": result,
 	})
+}
+
+func (h *AdminHandler) VerifyUserEmail(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAdmin(w, r) {
+		return
+	}
+	userID, err := strconv.Atoi(chi.URLParam(r, "userId"))
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid user ID", nil)
+		return
+	}
+	if err := h.DB.MarkUserEmailVerified(r.Context(), userID); err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to verify user email", nil)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *AdminHandler) SetUserAdmin(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAdmin(w, r) {
+		return
+	}
+	userID, err := strconv.Atoi(chi.URLParam(r, "userId"))
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid user ID", nil)
+		return
+	}
+	var req struct {
+		IsAdmin bool `json:"is_admin"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body", nil)
+		return
+	}
+	if err := h.DB.SetUserAdmin(r.Context(), userID, req.IsAdmin); err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to update admin status", nil)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *AdminHandler) GetSettings(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAdmin(w, r) {
+		return
+	}
+	settings, err := h.DB.ListSettings(r.Context())
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to load settings", nil)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"settings": redactedSettings(settings)})
+}
+
+func (h *AdminHandler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAdmin(w, r) {
+		return
+	}
+	var req map[string]string
+	if err := decodeJSON(r, &req); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body", nil)
+		return
+	}
+	allowed := map[string]bool{
+		"registration_enabled":     true,
+		"sso_registration_enabled": true,
+		"sso_only_registration":    true,
+		"casdoor_endpoint":         true,
+		"casdoor_client_id":        true,
+		"casdoor_client_secret":    true,
+		"casdoor_organization":     true,
+	}
+	for key, value := range req {
+		if !allowed[key] {
+			continue
+		}
+		if key == "casdoor_client_secret" && value == "" {
+			continue
+		}
+		if err := h.DB.SetSetting(r.Context(), key, value); err != nil {
+			respondError(w, http.StatusInternalServerError, "Failed to update settings", nil)
+			return
+		}
+	}
+	h.GetSettings(w, r)
+}
+
+func (h *AdminHandler) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
+	claims := middleware.GetClaims(r)
+	if claims == nil {
+		respondError(w, http.StatusUnauthorized, "Unauthorized", nil)
+		return false
+	}
+	user, err := h.DB.GetUserByID(r.Context(), claims.UserID)
+	if err != nil || !user.IsAdmin {
+		respondError(w, http.StatusForbidden, "Admin access required", nil)
+		return false
+	}
+	return true
+}
+
+func redactedSettings(settings map[string]string) map[string]string {
+	out := map[string]string{}
+	for k, v := range settings {
+		if k == "casdoor_client_secret" && v != "" {
+			out[k] = "********"
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/shorebird-server/internal/auth"
+	"github.com/shorebird-server/internal/db"
 )
 
 type contextKey string
@@ -16,7 +17,7 @@ const (
 )
 
 // AuthMiddleware validates JWT tokens and injects claims into the request context.
-func AuthMiddleware(authService *auth.Service) func(http.Handler) http.Handler {
+func AuthMiddleware(authService *auth.Service, store db.Store) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authHeader := r.Header.Get("Authorization")
@@ -38,6 +39,19 @@ func AuthMiddleware(authService *auth.Service) func(http.Handler) http.Handler {
 			claims, err := authService.ValidateToken(token)
 			if err != nil {
 				http.Error(w, `{"message":"Invalid or expired token"}`, http.StatusUnauthorized)
+				return
+			}
+			user, err := store.GetUserByID(r.Context(), claims.UserID)
+			if err != nil {
+				http.Error(w, `{"message":"User not found"}`, http.StatusUnauthorized)
+				return
+			}
+			if !user.EmailVerified {
+				http.Error(w, `{"message":"Email verification required"}`, http.StatusForbidden)
+				return
+			}
+			if user.MustChangePassword && r.URL.Path != "/api/v1/users/me" && r.URL.Path != "/api/v1/users/me/password" {
+				http.Error(w, `{"message":"Password change required"}`, http.StatusForbidden)
 				return
 			}
 

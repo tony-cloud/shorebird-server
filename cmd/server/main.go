@@ -14,6 +14,7 @@ import (
 	"github.com/shorebird-server/internal/auth"
 	"github.com/shorebird-server/internal/config"
 	"github.com/shorebird-server/internal/db"
+	"github.com/shorebird-server/internal/email"
 	"github.com/shorebird-server/internal/storage"
 )
 
@@ -36,8 +37,27 @@ func main() {
 	defer database.Close()
 	log.Printf("Database: %s (%s)", cfg.DB.Driver, cfg.DB.Path)
 
+	adminHash, err := auth.HashPassword(cfg.Admin.Password)
+	if err != nil {
+		log.Fatalf("Failed to hash default admin password: %v", err)
+	}
+	createdAdmin, err := database.EnsureDefaultAdmin(ctx, cfg.Admin.Email, cfg.Admin.Name, adminHash)
+	if err != nil {
+		log.Fatalf("Failed to ensure default admin account: %v", err)
+	}
+	if createdAdmin {
+		log.Printf("Created default admin account %s with default password; password change required at first login", cfg.Admin.Email)
+	}
+
 	// --- Auth ---
 	authService := auth.NewService(cfg.Auth.JWTSecret, cfg.Auth.TokenDuration)
+	mailer := email.NewMailer(email.Config{
+		Host:     cfg.Email.Host,
+		Port:     cfg.Email.Port,
+		Username: cfg.Email.Username,
+		Password: cfg.Email.Password,
+		From:     cfg.Email.From,
+	})
 
 	// --- Storage ---
 	store, err := storage.NewStore(storage.Config{
@@ -57,7 +77,7 @@ func main() {
 	log.Printf("Storage: %s", store.BackendName())
 
 	// --- Router ---
-	router := handlers.NewRouter(authService, database, store)
+	router := handlers.NewRouter(authService, database, store, mailer, cfg.Server.BaseURL)
 
 	// --- HTTP Server ---
 	addr := fmt.Sprintf("%s:%s", cfg.Server.Host, cfg.Server.Port)
