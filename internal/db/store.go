@@ -132,7 +132,7 @@ type Store interface {
 	GetLatestPatchForRelease(ctx context.Context, releaseID int) (*PatchRow, error)
 	GetPatchesByReleaseID(ctx context.Context, releaseID int) ([]PatchWithChannelRow, error)
 	PromotePatch(ctx context.Context, patchID, channelID int) error
-	GetLatestPromotedPatch(ctx context.Context, releaseID, channelID int) (*PatchWithArtifactRow, error)
+	GetLatestPromotedPatch(ctx context.Context, releaseID, channelID int, arch, platform string) (*PatchWithArtifactRow, error)
 
 	// --- Patch Artifacts ---
 	CreatePatchArtifact(ctx context.Context, patchID int, arch, platform, hash, storageKey string, size int64, hashSignature, podfileLockHash *string) (*PatchArtifactRow, error)

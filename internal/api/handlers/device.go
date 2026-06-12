@@ -44,7 +44,7 @@ func (h *DeviceHandler) PatchCheck(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Release not found, no patch available
 		respondJSON(w, http.StatusOK, models.PatchCheckResponse{
-			PatchAvailable: false,
+			PatchAvailable:         false,
 			RolledBackPatchNumbers: []int{},
 		})
 		return
@@ -73,7 +73,7 @@ func (h *DeviceHandler) PatchCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Find the latest promoted patch for this release+channel
-	patch, err := h.DB.GetLatestPromotedPatch(r.Context(), release.ID, channel.ID)
+	patch, err := h.DB.GetLatestPromotedPatch(r.Context(), release.ID, channel.ID, req.Arch, req.Platform)
 	if err != nil {
 		// No patch available
 		respondJSON(w, http.StatusOK, models.PatchCheckResponse{

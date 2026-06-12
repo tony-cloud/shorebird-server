@@ -505,9 +505,9 @@ func (s *SqliteStore) PromotePatch(ctx context.Context, patchID, channelID int) 
 	_, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO patch_channels (patch_id, channel_id) VALUES (?, ?)`, patchID, channelID)
 	return err
 }
-func (s *SqliteStore) GetLatestPromotedPatch(ctx context.Context, releaseID, channelID int) (*PatchWithArtifactRow, error) {
+func (s *SqliteStore) GetLatestPromotedPatch(ctx context.Context, releaseID, channelID int, arch, platform string) (*PatchWithArtifactRow, error) {
 	r := &PatchWithArtifactRow{}
-	err := s.db.QueryRowContext(ctx, `SELECT p.id, p.release_id, p.number, p.notes, p.created_at, pa.hash, pa.storage_key, pa.hash_signature FROM patches p JOIN patch_channels pc ON p.id = pc.patch_id LEFT JOIN patch_artifacts pa ON p.id = pa.patch_id WHERE p.release_id = ? AND pc.channel_id = ? ORDER BY p.number DESC LIMIT 1`, releaseID, channelID).Scan(&r.ID, &r.ReleaseID, &r.Number, &r.Notes, &r.CreatedAt, &r.Hash, &r.StorageKey, &r.HashSignature)
+	err := s.db.QueryRowContext(ctx, `SELECT p.id, p.release_id, p.number, p.notes, p.created_at, pa.hash, pa.storage_key, pa.hash_signature FROM patches p JOIN patch_channels pc ON p.id = pc.patch_id JOIN patch_artifacts pa ON p.id = pa.patch_id WHERE p.release_id = ? AND pc.channel_id = ? AND pa.arch = ? AND pa.platform = ? ORDER BY p.number DESC LIMIT 1`, releaseID, channelID, arch, platform).Scan(&r.ID, &r.ReleaseID, &r.Number, &r.Notes, &r.CreatedAt, &r.Hash, &r.StorageKey, &r.HashSignature)
 	if err != nil {
 		return nil, err
 	}

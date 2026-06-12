@@ -595,17 +595,18 @@ func (db *PgStore) PromotePatch(ctx context.Context, patchID, channelID int) err
 }
 
 // GetLatestPromotedPatch returns the latest patch promoted to a specific channel for a release.
-func (db *PgStore) GetLatestPromotedPatch(ctx context.Context, releaseID, channelID int) (*PatchWithArtifactRow, error) {
+func (db *PgStore) GetLatestPromotedPatch(ctx context.Context, releaseID, channelID int, arch, platform string) (*PatchWithArtifactRow, error) {
 	row := &PatchWithArtifactRow{}
 	err := db.queryRow(ctx,
 		`SELECT p.id, p.release_id, p.number, p.notes, p.created_at,
 		        pa.hash, pa.storage_key, pa.hash_signature
 		 FROM patches p
 		 JOIN patch_channels pc ON p.id = pc.patch_id
-		 LEFT JOIN patch_artifacts pa ON p.id = pa.patch_id
+		 JOIN patch_artifacts pa ON p.id = pa.patch_id
 		 WHERE p.release_id = $1 AND pc.channel_id = $2
+		   AND pa.arch = $3 AND pa.platform = $4
 		 ORDER BY p.number DESC LIMIT 1`,
-		releaseID, channelID,
+		releaseID, channelID, arch, platform,
 	).Scan(&row.ID, &row.ReleaseID, &row.Number, &row.Notes, &row.CreatedAt,
 		&row.Hash, &row.StorageKey, &row.HashSignature)
 	if err != nil {
