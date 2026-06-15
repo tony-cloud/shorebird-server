@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/shorebird-server/internal/db"
 	"github.com/shorebird-server/internal/models"
 	"github.com/shorebird-server/internal/storage"
@@ -21,6 +22,14 @@ type PatchHandler struct {
 // CreatePatch handles POST /api/v1/apps/{appId}/patches
 func (h *PatchHandler) CreatePatch(w http.ResponseWriter, r *http.Request) {
 	appID := chi.URLParam(r, "appId")
+	parsedAppID, err := uuid.Parse(appID)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid app ID", nil)
+		return
+	}
+	if _, ok := requireAppAccess(w, r, h.DB, parsedAppID, true); !ok {
+		return
+	}
 
 	var req models.CreatePatchRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -62,6 +71,14 @@ func (h *PatchHandler) CreatePatch(w http.ResponseWriter, r *http.Request) {
 // CreatePatchArtifact handles POST /api/v1/apps/{appId}/patches/{patchId}/artifacts
 func (h *PatchHandler) CreatePatchArtifact(w http.ResponseWriter, r *http.Request) {
 	appID := chi.URLParam(r, "appId")
+	parsedAppID, err := uuid.Parse(appID)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid app ID", nil)
+		return
+	}
+	if _, ok := requireAppAccess(w, r, h.DB, parsedAppID, true); !ok {
+		return
+	}
 	patchID, err := strconv.Atoi(chi.URLParam(r, "patchId"))
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "Invalid patch ID", nil)
@@ -93,6 +110,10 @@ func (h *PatchHandler) CreatePatchArtifact(w http.ResponseWriter, r *http.Reques
 	release, err := h.DB.GetReleaseByID(r.Context(), patch.ReleaseID)
 	if err != nil {
 		respondError(w, http.StatusNotFound, "Release not found", nil)
+		return
+	}
+	if release.AppID != parsedAppID {
+		respondError(w, http.StatusNotFound, "Patch not found for this app", nil)
 		return
 	}
 
@@ -136,9 +157,22 @@ func (h *PatchHandler) CreatePatchArtifact(w http.ResponseWriter, r *http.Reques
 
 // GetPatches handles GET /api/v1/apps/{appId}/releases/{releaseId}/patches
 func (h *PatchHandler) GetPatches(w http.ResponseWriter, r *http.Request) {
+	appID, err := uuid.Parse(chi.URLParam(r, "appId"))
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid app ID", nil)
+		return
+	}
+	if _, ok := requireAppAccess(w, r, h.DB, appID, false); !ok {
+		return
+	}
 	releaseID, err := strconv.Atoi(chi.URLParam(r, "releaseId"))
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "Invalid release ID", nil)
+		return
+	}
+	release, err := h.DB.GetReleaseByID(r.Context(), releaseID)
+	if err != nil || release.AppID != appID {
+		respondError(w, http.StatusNotFound, "Release not found for this app", nil)
 		return
 	}
 
@@ -172,9 +206,20 @@ func (h *PatchHandler) GetPatches(w http.ResponseWriter, r *http.Request) {
 
 // PromotePatch handles POST /api/v1/apps/{appId}/patches/promote
 func (h *PatchHandler) PromotePatch(w http.ResponseWriter, r *http.Request) {
+	appID, err := uuid.Parse(chi.URLParam(r, "appId"))
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid app ID", nil)
+		return
+	}
+	if _, ok := requireAppAccess(w, r, h.DB, appID, true); !ok {
+		return
+	}
 	var req models.PromotePatchRequest
 	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "Invalid request body", nil)
+		return
+	}
+	if !h.patchBelongsToApp(w, r, req.PatchID, appID) {
 		return
 	}
 
@@ -188,6 +233,22 @@ func (h *PatchHandler) PromotePatch(w http.ResponseWriter, r *http.Request) {
 
 // UpdatePatch handles PATCH /api/v1/apps/{appId}/patches/{patchId}
 func (h *PatchHandler) UpdatePatch(w http.ResponseWriter, r *http.Request) {
+	appID, err := uuid.Parse(chi.URLParam(r, "appId"))
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid app ID", nil)
+		return
+	}
+	if _, ok := requireAppAccess(w, r, h.DB, appID, true); !ok {
+		return
+	}
+	patchID, err := strconv.Atoi(chi.URLParam(r, "patchId"))
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid patch ID", nil)
+		return
+	}
+	if !h.patchBelongsToApp(w, r, patchID, appID) {
+		return
+	}
 	var req models.UpdatePatchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, http.StatusBadRequest, "Invalid request body", nil)
@@ -197,4 +258,18 @@ func (h *PatchHandler) UpdatePatch(w http.ResponseWriter, r *http.Request) {
 	// For now, notes are the only updatable field on patches
 	// This would require an additional DB method
 	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *PatchHandler) patchBelongsToApp(w http.ResponseWriter, r *http.Request, patchID int, appID uuid.UUID) bool {
+	patch, err := h.DB.GetPatchByID(r.Context(), patchID)
+	if err != nil {
+		respondError(w, http.StatusNotFound, "Patch not found", nil)
+		return false
+	}
+	release, err := h.DB.GetReleaseByID(r.Context(), patch.ReleaseID)
+	if err != nil || release.AppID != appID {
+		respondError(w, http.StatusNotFound, "Patch not found for this app", nil)
+		return false
+	}
+	return true
 }

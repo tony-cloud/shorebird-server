@@ -8,16 +8,17 @@ type Config struct {
 	Type string
 
 	// Local settings
-	LocalDir        string
-	ServerBaseURL   string
+	LocalDir      string
+	ServerBaseURL string
+	UploadSecret  string
 
 	// S3 settings
-	S3Endpoint        string
-	S3AccessKey       string
-	S3SecretKey       string
-	S3UseSSL          bool
-	S3ReleaseBucket   string
-	S3PatchBucket     string
+	S3Endpoint      string
+	S3AccessKey     string
+	S3SecretKey     string
+	S3UseSSL        bool
+	S3ReleaseBucket string
+	S3PatchBucket   string
 }
 
 // NewStore creates the appropriate Store backend based on Config.Type.
@@ -32,6 +33,6 @@ func NewStore(cfg Config) (Store, error) {
 		if cfg.Type != "" && cfg.Type != "local" {
 			fmt.Printf("storage: unknown type %q, falling back to local\n", cfg.Type)
 		}
-		return NewLocalStore(cfg.LocalDir, cfg.ServerBaseURL)
+		return NewLocalStore(cfg.LocalDir, cfg.ServerBaseURL, cfg.UploadSecret)
 	}
 }

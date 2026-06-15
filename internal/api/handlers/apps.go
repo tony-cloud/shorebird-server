@@ -285,12 +285,7 @@ func (h *AppHandler) TransferApp(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AppHandler) canManageOrganization(r *http.Request, userID, orgID int) bool {
-	user, _ := h.DB.GetUserByID(r.Context(), userID)
-	if user != nil && user.IsAdmin {
-		return true
-	}
-	role, err := h.DB.GetOrganizationRole(r.Context(), userID, orgID)
-	return err == nil && role == "admin"
+	return canAccessOrganization(r, h.DB, userID, orgID, true)
 }
 
 // ChannelHandler handles channel-related API endpoints.
@@ -304,6 +299,9 @@ func (h *ChannelHandler) GetChannels(w http.ResponseWriter, r *http.Request) {
 	id, err := parseUUID(appID)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "Invalid app ID", nil)
+		return
+	}
+	if _, ok := requireAppAccess(w, r, h.DB, id, false); !ok {
 		return
 	}
 
@@ -331,6 +329,9 @@ func (h *ChannelHandler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 	id, err := parseUUID(appID)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "Invalid app ID", nil)
+		return
+	}
+	if _, ok := requireAppAccess(w, r, h.DB, id, true); !ok {
 		return
 	}
 

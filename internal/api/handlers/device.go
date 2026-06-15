@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/google/uuid"
+	"github.com/shorebird-server/internal/api/middleware"
 	"github.com/shorebird-server/internal/db"
 	"github.com/shorebird-server/internal/models"
 	"github.com/shorebird-server/internal/storage"
@@ -179,7 +180,17 @@ func (h *DeviceHandler) PatchEvents(w http.ResponseWriter, r *http.Request) {
 
 // RollbackPatch handles POST /api/v1/apps/{appId}/patches/rollback (admin endpoint)
 func (h *DeviceHandler) RollbackPatch(w http.ResponseWriter, r *http.Request) {
-	// This is an admin operation. For now, allow authenticated users.
+	claims := middleware.GetClaims(r)
+	if claims == nil {
+		respondError(w, http.StatusUnauthorized, "Unauthorized", nil)
+		return
+	}
+	user, err := h.DB.GetUserByID(r.Context(), claims.UserID)
+	if err != nil || !user.IsAdmin {
+		respondError(w, http.StatusForbidden, "Admin access required", nil)
+		return
+	}
+
 	var req struct {
 		ReleaseID   int `json:"release_id"`
 		PatchNumber int `json:"patch_number"`

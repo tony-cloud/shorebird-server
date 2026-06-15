@@ -64,6 +64,7 @@ func main() {
 		Type:            cfg.Storage.Driver,
 		LocalDir:        cfg.Storage.LocalDir,
 		ServerBaseURL:   cfg.Server.BaseURL,
+		UploadSecret:    cfg.Auth.JWTSecret,
 		S3Endpoint:      cfg.Storage.S3Endpoint,
 		S3AccessKey:     cfg.Storage.S3AccessKey,
 		S3SecretKey:     cfg.Storage.S3SecretKey,

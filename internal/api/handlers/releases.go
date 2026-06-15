@@ -38,6 +38,9 @@ func (h *ReleaseHandler) GetReleases(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "Invalid app ID", nil)
 		return
 	}
+	if _, ok := requireAppAccess(w, r, h.DB, appID, false); !ok {
+		return
+	}
 
 	sideloadable := r.URL.Query().Get("sideloadable") == "true"
 
@@ -81,6 +84,9 @@ func (h *ReleaseHandler) CreateRelease(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "Invalid app ID", nil)
 		return
 	}
+	if _, ok := requireAppAccess(w, r, h.DB, appID, true); !ok {
+		return
+	}
 
 	var req models.CreateReleaseRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -112,9 +118,20 @@ func (h *ReleaseHandler) CreateRelease(w http.ResponseWriter, r *http.Request) {
 
 // UpdateRelease handles PATCH /api/v1/apps/{appId}/releases/{releaseId}
 func (h *ReleaseHandler) UpdateRelease(w http.ResponseWriter, r *http.Request) {
+	appID, err := parseUUID(chi.URLParam(r, "appId"))
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid app ID", nil)
+		return
+	}
+	if _, ok := requireAppAccess(w, r, h.DB, appID, true); !ok {
+		return
+	}
 	releaseID, err := parseIntParam(r, "releaseId")
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "Invalid release ID", nil)
+		return
+	}
+	if !h.releaseBelongsToApp(w, r, releaseID, appID) {
 		return
 	}
 
@@ -133,9 +150,20 @@ func (h *ReleaseHandler) UpdateRelease(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ReleaseHandler) DeleteRelease(w http.ResponseWriter, r *http.Request) {
+	appID, err := parseUUID(chi.URLParam(r, "appId"))
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid app ID", nil)
+		return
+	}
+	if _, ok := requireAppAccess(w, r, h.DB, appID, true); !ok {
+		return
+	}
 	releaseID, err := parseIntParam(r, "releaseId")
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "Invalid release ID", nil)
+		return
+	}
+	if !h.releaseBelongsToApp(w, r, releaseID, appID) {
 		return
 	}
 	if err := h.DB.DeleteRelease(r.Context(), releaseID); err != nil {
@@ -148,9 +176,20 @@ func (h *ReleaseHandler) DeleteRelease(w http.ResponseWriter, r *http.Request) {
 // CreateReleaseArtifact handles POST /api/v1/apps/{appId}/releases/{releaseId}/artifacts
 func (h *ReleaseHandler) CreateReleaseArtifact(w http.ResponseWriter, r *http.Request) {
 	appID := chi.URLParam(r, "appId")
+	parsedAppID, err := parseUUID(appID)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid app ID", nil)
+		return
+	}
+	if _, ok := requireAppAccess(w, r, h.DB, parsedAppID, true); !ok {
+		return
+	}
 	releaseID, err := parseIntParam(r, "releaseId")
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "Invalid release ID", nil)
+		return
+	}
+	if !h.releaseBelongsToApp(w, r, releaseID, parsedAppID) {
 		return
 	}
 
@@ -216,9 +255,20 @@ func (h *ReleaseHandler) CreateReleaseArtifact(w http.ResponseWriter, r *http.Re
 
 // GetReleaseArtifacts handles GET /api/v1/apps/{appId}/releases/{releaseId}/artifacts
 func (h *ReleaseHandler) GetReleaseArtifacts(w http.ResponseWriter, r *http.Request) {
+	appID, err := parseUUID(chi.URLParam(r, "appId"))
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid app ID", nil)
+		return
+	}
+	if _, ok := requireAppAccess(w, r, h.DB, appID, false); !ok {
+		return
+	}
 	releaseID, err := parseIntParam(r, "releaseId")
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "Invalid release ID", nil)
+		return
+	}
+	if !h.releaseBelongsToApp(w, r, releaseID, appID) {
 		return
 	}
 
@@ -259,4 +309,13 @@ func (h *ReleaseHandler) GetReleaseArtifacts(w http.ResponseWriter, r *http.Requ
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{"artifacts": result})
+}
+
+func (h *ReleaseHandler) releaseBelongsToApp(w http.ResponseWriter, r *http.Request, releaseID int, appID uuid.UUID) bool {
+	release, err := h.DB.GetReleaseByID(r.Context(), releaseID)
+	if err != nil || release.AppID != appID {
+		respondError(w, http.StatusNotFound, "Release not found for this app", nil)
+		return false
+	}
+	return true
 }

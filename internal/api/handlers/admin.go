@@ -17,6 +17,9 @@ type AdminHandler struct {
 // AddTargetDevice handles POST /api/v1/admin/patches/{patchId}/target-devices
 // Restricts a patch to only be delivered to specific devices (by client_id).
 func (h *AdminHandler) AddTargetDevice(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAdmin(w, r) {
+		return
+	}
 	patchID, err := strconv.Atoi(chi.URLParam(r, "patchId"))
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "Invalid patch ID", nil)
@@ -41,6 +44,9 @@ func (h *AdminHandler) AddTargetDevice(w http.ResponseWriter, r *http.Request) {
 
 // RemoveTargetDevice handles DELETE /api/v1/admin/patches/{patchId}/target-devices/{clientId}
 func (h *AdminHandler) RemoveTargetDevice(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAdmin(w, r) {
+		return
+	}
 	// For simplicity, target device removal is handled by the database cascade
 	// In a full implementation, add a RemovePatchTargetDevice DB method
 	respondError(w, http.StatusNotImplemented, "Not yet implemented", nil)
@@ -48,6 +54,9 @@ func (h *AdminHandler) RemoveTargetDevice(w http.ResponseWriter, r *http.Request
 
 // GetTargetDevices handles GET /api/v1/admin/patches/{patchId}/target-devices
 func (h *AdminHandler) GetTargetDevices(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAdmin(w, r) {
+		return
+	}
 	patchID, err := strconv.Atoi(chi.URLParam(r, "patchId"))
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "Invalid patch ID", nil)
@@ -69,6 +78,9 @@ func (h *AdminHandler) GetTargetDevices(w http.ResponseWriter, r *http.Request) 
 // GetPatchEvents handles GET /api/v1/admin/apps/{appId}/events
 // Returns patch events for analytics.
 func (h *AdminHandler) GetPatchEvents(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAdmin(w, r) {
+		return
+	}
 	// This would query patch_events table for the app
 	// For now, return a stub
 	respondJSON(w, http.StatusOK, map[string]interface{}{
