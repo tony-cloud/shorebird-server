@@ -39,6 +39,7 @@ func NewRouter(authService *authpkg.Service, database db.Store, store storage.St
 	orgHandler := &OrganizationHandler{DB: database}
 	releaseHandler := &ReleaseHandler{DB: database, Storage: store, BaseURL: baseURL}
 	patchHandler := &PatchHandler{DB: database, Storage: store}
+	metricsHandler := &MetricsHandler{DB: database}
 	deviceHandler := &DeviceHandler{DB: database, Storage: store}
 	diagHandler := &DiagnosticsHandler{}
 	adminHandler := &AdminHandler{DB: database}
@@ -96,6 +97,10 @@ func NewRouter(authService *authpkg.Service, database db.Store, store storage.St
 			r.Post("/apps", appHandler.CreateApp)
 			r.Delete("/apps/{appId}", appHandler.DeleteApp)
 			r.Patch("/apps/{appId}/transfer", appHandler.TransferApp)
+			r.Get("/apps/{appId}/metrics/active-hours", metricsHandler.GetActiveHours)
+			r.Get("/apps/{appId}/metrics/unique-users", metricsHandler.GetUniqueUsers)
+			r.Get("/apps/{appId}/metrics/version-distribution", metricsHandler.GetVersionDistribution)
+			r.Get("/apps/{appId}/metrics/patch-adoption", metricsHandler.GetPatchAdoption)
 
 			// Channels
 			r.Get("/apps/{appId}/channels", channelHandler.GetChannels)

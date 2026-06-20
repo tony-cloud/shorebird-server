@@ -529,6 +529,22 @@ func (s *SqliteStore) InsertPatchEvent(ctx context.Context, appID uuid.UUID, cli
 	_, err := s.db.ExecContext(ctx, `INSERT INTO patch_events (app_id, client_id, arch, patch_number, platform, release_version, event_type, timestamp, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, appID.String(), clientID, arch, patchNumber, platform, releaseVersion, eventType, timestamp, message)
 	return err
 }
+func (s *SqliteStore) ListPatchEventActivity(ctx context.Context, appID uuid.UUID, sinceSeconds, sinceMillis int64) ([]PatchEventActivityRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT client_id, timestamp, platform, release_version, patch_number FROM patch_events WHERE app_id = ? AND client_id <> '' AND ((timestamp < 1000000000000 AND timestamp >= ?) OR (timestamp >= 1000000000000 AND timestamp >= ?))`, appID.String(), sinceSeconds, sinceMillis)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []PatchEventActivityRow
+	for rows.Next() {
+		var r PatchEventActivityRow
+		if err := rows.Scan(&r.ClientID, &r.Timestamp, &r.Platform, &r.ReleaseVersion, &r.PatchNumber); err != nil {
+			return nil, err
+		}
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}
 
 // --- Rollbacks ---
 func (s *SqliteStore) RollbackPatch(ctx context.Context, releaseID, patchNumber int) error {

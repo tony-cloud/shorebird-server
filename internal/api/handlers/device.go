@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/shorebird-server/internal/api/middleware"
@@ -39,6 +40,7 @@ func (h *DeviceHandler) PatchCheck(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusNotFound, "App not found", nil)
 		return
 	}
+	h.recordPatchCheckActivity(r, appID, req)
 
 	// Find the release by app and version
 	release, err := h.DB.GetReleaseByAppIDAndVersion(r.Context(), appID, req.ReleaseVersion)
@@ -135,6 +137,30 @@ func (h *DeviceHandler) PatchCheck(w http.ResponseWriter, r *http.Request) {
 		},
 		RolledBackPatchNumbers: rolledBack,
 	})
+}
+
+func (h *DeviceHandler) recordPatchCheckActivity(r *http.Request, appID uuid.UUID, req models.PatchCheckRequest) {
+	if req.ClientID == nil || *req.ClientID == "" {
+		return
+	}
+	patchNumber := 0
+	if req.CurrentPatchNumber != nil {
+		patchNumber = *req.CurrentPatchNumber
+	} else if req.PatchNumber != nil {
+		patchNumber = *req.PatchNumber
+	}
+	_ = h.DB.InsertPatchEvent(
+		r.Context(),
+		appID,
+		*req.ClientID,
+		req.Arch,
+		req.Platform,
+		req.ReleaseVersion,
+		"PatchCheck",
+		patchNumber,
+		time.Now().UTC().UnixMilli(),
+		nil,
+	)
 }
 
 // PatchEvents handles POST /api/v1/patches/events

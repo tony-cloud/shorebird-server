@@ -643,6 +643,34 @@ func (db *PgStore) InsertPatchEvent(ctx context.Context, appID uuid.UUID, client
 	return err
 }
 
+// ListPatchEventActivity returns recent device activity timestamps for an app.
+func (db *PgStore) ListPatchEventActivity(ctx context.Context, appID uuid.UUID, sinceSeconds, sinceMillis int64) ([]PatchEventActivityRow, error) {
+	rows, err := db.query(ctx,
+		`SELECT client_id, timestamp, platform, release_version, patch_number
+		 FROM patch_events
+		 WHERE app_id = $1
+		   AND client_id <> ''
+		   AND (
+		     (timestamp < 1000000000000 AND timestamp >= $2)
+		     OR (timestamp >= 1000000000000 AND timestamp >= $3)
+		   )`,
+		appID, sinceSeconds, sinceMillis)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []PatchEventActivityRow
+	for rows.Next() {
+		var r PatchEventActivityRow
+		if err := rows.Scan(&r.ClientID, &r.Timestamp, &r.Platform, &r.ReleaseVersion, &r.PatchNumber); err != nil {
+			return nil, err
+		}
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}
+
 // --- Rolled back patches ---
 
 // RollbackPatch marks a patch as rolled back.
