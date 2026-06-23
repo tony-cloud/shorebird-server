@@ -78,7 +78,11 @@ func main() {
 	log.Printf("Storage: %s", store.BackendName())
 
 	// --- Router ---
-	router := handlers.NewRouter(authService, database, store, mailer, cfg.Server.BaseURL)
+	router := handlers.NewRouter(authService, database, store, mailer, cfg.Server.BaseURL, handlers.PatchDeliveryConfig{
+		EncryptionMode:        cfg.PatchDelivery.EncryptionMode,
+		AESSecret:             []byte(cfg.PatchDelivery.AESSecret),
+		CacheEncryptedPatches: cfg.PatchDelivery.CacheEncryptedPatches,
+	})
 
 	// --- HTTP Server ---
 	addr := fmt.Sprintf("%s:%s", cfg.Server.Host, cfg.Server.Port)

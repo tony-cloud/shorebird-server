@@ -1,6 +1,8 @@
 # Shorebird Self-Hosted Server
 
 A self-hosted replacement for the Shorebird CodePush API server (`api.shorebird.dev`).
+See `../shorebird/OPEN_SOURCE_REPLACEMENTS.md` for the current audit of public upstream
+Shorebird components and the local replacements for hosted Shorebird services.
 
 ## Quick Start (Zero Dependencies)
 
@@ -60,6 +62,24 @@ All settings via environment variables. See `.env.example` for the full list.
 | `SMTP_HOST` | *(empty)* | SMTP host for verification/reset emails; empty logs links |
 | `SMTP_PORT` | `587` | SMTP port |
 | `SMTP_FROM` | `shorebird@localhost` | From address for account emails |
+| `PATCH_DELIVERY_ENCRYPTION` | `off` | Set to `per_device_aes_gcm` to enable opt-in encrypted patch delivery |
+| `PATCH_DELIVERY_AES_SECRET` | *(empty)* | Server secret used to derive per-device AES-GCM keys |
+| `PATCH_DELIVERY_CACHE_ENCRYPTED` | `true` | Cache per-device encrypted patch artifacts |
+
+### Optional encrypted patch delivery
+
+Encrypted delivery is disabled by default so the server remains compatible
+with the public Shorebird updater, which expects plaintext patch bytes. When
+`PATCH_DELIVERY_ENCRYPTION=per_device_aes_gcm` is set, devices that send
+`accept_encrypted_patch=true` and a `client_id` to `/api/v1/patches/check`
+receive a cached AES-GCM ciphertext URL plus encryption metadata.
+
+The generated updater `client_id` is a random UUID persisted on first startup.
+Apps using the cloned `shorebird_code_push` package can call
+`ShorebirdUpdater().setDeviceIdOverride(...)` before checking for updates to
+bind delivery to their own stable app/account device id. This id is not a
+secret; the server derives encryption keys from `PATCH_DELIVERY_AES_SECRET`
+and the app/device/patch context.
 
 ### Account Security and SSO
 

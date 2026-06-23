@@ -16,7 +16,7 @@ import (
 )
 
 // NewRouter creates the HTTP router with all API routes.
-func NewRouter(authService *authpkg.Service, database db.Store, store storage.Store, mailer *email.Mailer, baseURL string) *chi.Mux {
+func NewRouter(authService *authpkg.Service, database db.Store, store storage.Store, mailer *email.Mailer, baseURL string, patchDelivery PatchDeliveryConfig) *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(chimw.Logger)
 	r.Use(chimw.Recoverer)
@@ -40,7 +40,7 @@ func NewRouter(authService *authpkg.Service, database db.Store, store storage.St
 	releaseHandler := &ReleaseHandler{DB: database, Storage: store, BaseURL: baseURL}
 	patchHandler := &PatchHandler{DB: database, Storage: store}
 	metricsHandler := &MetricsHandler{DB: database}
-	deviceHandler := &DeviceHandler{DB: database, Storage: store}
+	deviceHandler := &DeviceHandler{DB: database, Storage: store, PatchDelivery: patchDelivery}
 	diagHandler := &DiagnosticsHandler{}
 	adminHandler := &AdminHandler{DB: database}
 	storageHandler := NewStorageHandler(store)

@@ -13,8 +13,9 @@ import (
 
 // DeviceHandler handles device-facing API endpoints (no auth required).
 type DeviceHandler struct {
-	DB      db.Store
-	Storage storage.Store
+	DB            db.Store
+	Storage       storage.Store
+	PatchDelivery PatchDeliveryConfig
 }
 
 // PatchCheck handles POST /api/v1/patches/check
@@ -58,6 +59,8 @@ func (h *DeviceHandler) PatchCheck(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		rolledBack = []int{}
 	}
+	currentPatchNumber := requestPatchNumber(req)
+	potentialRemoval := h.expiredInstalledPatchRemoval(r, release.ID, currentPatchNumber, req.Arch, req.Platform, time.Now().UTC())
 
 	// Find the channel (default to "stable")
 	channelName := req.Channel
@@ -68,10 +71,7 @@ func (h *DeviceHandler) PatchCheck(w http.ResponseWriter, r *http.Request) {
 	channel, err := h.DB.GetChannelByAppIDAndName(r.Context(), appID, channelName)
 	if err != nil {
 		// Channel not found, no patch available
-		respondJSON(w, http.StatusOK, models.PatchCheckResponse{
-			PatchAvailable:         false,
-			RolledBackPatchNumbers: rolledBack,
-		})
+		respondNoPatch(w, rolledBack, potentialRemoval)
 		return
 	}
 
@@ -79,28 +79,23 @@ func (h *DeviceHandler) PatchCheck(w http.ResponseWriter, r *http.Request) {
 	patch, err := h.DB.GetLatestPromotedPatch(r.Context(), release.ID, channel.ID, req.Arch, req.Platform)
 	if err != nil {
 		// No patch available
-		respondJSON(w, http.StatusOK, models.PatchCheckResponse{
-			PatchAvailable:         false,
-			RolledBackPatchNumbers: rolledBack,
-		})
+		respondNoPatch(w, rolledBack, potentialRemoval)
+		return
+	}
+	if patchExpired(patch, time.Now().UTC()) {
+		respondNoPatch(w, rolledBack, potentialRemoval)
 		return
 	}
 
 	// If the device already has this or a newer patch, no update needed
 	if req.CurrentPatchNumber != nil && *req.CurrentPatchNumber >= patch.Number {
-		respondJSON(w, http.StatusOK, models.PatchCheckResponse{
-			PatchAvailable:         false,
-			RolledBackPatchNumbers: rolledBack,
-		})
+		respondNoPatch(w, rolledBack, potentialRemoval)
 		return
 	}
 
 	// Also check legacy patch_number field
 	if req.PatchNumber != nil && *req.PatchNumber >= patch.Number {
-		respondJSON(w, http.StatusOK, models.PatchCheckResponse{
-			PatchAvailable:         false,
-			RolledBackPatchNumbers: rolledBack,
-		})
+		respondNoPatch(w, rolledBack, potentialRemoval)
 		return
 	}
 
@@ -111,32 +106,82 @@ func (h *DeviceHandler) PatchCheck(w http.ResponseWriter, r *http.Request) {
 			isTargeted, err := h.DB.IsPatchTargetedToDevice(r.Context(), patch.ID, *req.ClientID)
 			if err != nil || !isTargeted {
 				// Patch is restricted but this device is not in the allowlist
-				respondJSON(w, http.StatusOK, models.PatchCheckResponse{
-					PatchAvailable:         false,
-					RolledBackPatchNumbers: rolledBack,
-				})
+				respondNoPatch(w, rolledBack, potentialRemoval)
 				return
 			}
 		}
 	}
 
-	// Generate the public download URL for the patch artifact
-	downloadURL, err := h.Storage.GeneratePublicDownloadURL(r.Context(), patch.StorageKey)
+	delivery, err := h.maybeEncryptedPatchDelivery(r.Context(), appID, release.ID, req, patch)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to generate download URL", nil)
+		respondError(w, http.StatusInternalServerError, "Failed to prepare patch download", nil)
 		return
 	}
 
 	respondJSON(w, http.StatusOK, models.PatchCheckResponse{
 		PatchAvailable: true,
 		Patch: &models.PatchCheckMetadata{
-			Number:        patch.Number,
-			DownloadURL:   downloadURL,
-			Hash:          patch.Hash,
-			HashSignature: patch.HashSignature,
+			Number:           patch.Number,
+			DownloadURL:      delivery.downloadURL,
+			Hash:             patch.Hash,
+			HashSignature:    patch.HashSignature,
+			OfflineExpiresAt: patch.OfflineExpiresAt.Ptr(),
+			Encryption:       delivery.encryption,
 		},
 		RolledBackPatchNumbers: rolledBack,
 	})
+}
+
+func respondNoPatch(w http.ResponseWriter, rolledBack []int, removal *models.PatchRemoval) {
+	if rolledBack == nil {
+		rolledBack = []int{}
+	}
+	if removal != nil {
+		rolledBack = appendPatchNumberOnce(rolledBack, removal.Number)
+	}
+	respondJSON(w, http.StatusOK, models.PatchCheckResponse{
+		PatchAvailable:         false,
+		RolledBackPatchNumbers: rolledBack,
+		RemovePatch:            removal,
+	})
+}
+
+func requestPatchNumber(req models.PatchCheckRequest) *int {
+	if req.CurrentPatchNumber != nil {
+		return req.CurrentPatchNumber
+	}
+	return req.PatchNumber
+}
+
+func (h *DeviceHandler) expiredInstalledPatchRemoval(r *http.Request, releaseID int, patchNumber *int, arch, platform string, now time.Time) *models.PatchRemoval {
+	if patchNumber == nil || *patchNumber <= 0 {
+		return nil
+	}
+	installed, err := h.DB.GetPatchByReleaseNumber(r.Context(), releaseID, *patchNumber, arch, platform)
+	if err != nil || !patchExpired(installed, now) {
+		return nil
+	}
+	return &models.PatchRemoval{
+		Number:           *patchNumber,
+		Reason:           "offline_expired",
+		OfflineExpiresAt: installed.OfflineExpiresAt.Ptr(),
+	}
+}
+
+func patchExpired(patch *db.PatchWithArtifactRow, now time.Time) bool {
+	if patch == nil || !patch.OfflineExpiresAt.Valid {
+		return false
+	}
+	return !now.UTC().Before(patch.OfflineExpiresAt.Time.Time.UTC())
+}
+
+func appendPatchNumberOnce(numbers []int, patchNumber int) []int {
+	for _, existing := range numbers {
+		if existing == patchNumber {
+			return numbers
+		}
+	}
+	return append(numbers, patchNumber)
 }
 
 func (h *DeviceHandler) recordPatchCheckActivity(r *http.Request, appID uuid.UUID, req models.PatchCheckRequest) {

@@ -123,15 +123,16 @@ type PatchArtifact struct {
 
 // PatchCheckRequest is the POST /patches/check request body.
 type PatchCheckRequest struct {
-	ReleaseVersion     string  `json:"release_version"`
-	PatchNumber        *int    `json:"patch_number"`
-	PatchHash          *string `json:"patch_hash"`
-	Platform           string  `json:"platform"`
-	Arch               string  `json:"arch"`
-	AppID              string  `json:"app_id"`
-	Channel            string  `json:"channel"`
-	ClientID           *string `json:"client_id"`
-	CurrentPatchNumber *int    `json:"current_patch_number"`
+	ReleaseVersion       string  `json:"release_version"`
+	PatchNumber          *int    `json:"patch_number"`
+	PatchHash            *string `json:"patch_hash"`
+	Platform             string  `json:"platform"`
+	Arch                 string  `json:"arch"`
+	AppID                string  `json:"app_id"`
+	Channel              string  `json:"channel"`
+	ClientID             *string `json:"client_id"`
+	CurrentPatchNumber   *int    `json:"current_patch_number"`
+	AcceptEncryptedPatch bool    `json:"accept_encrypted_patch,omitempty"`
 }
 
 // PatchCheckResponse is the POST /patches/check response body.
@@ -139,14 +140,41 @@ type PatchCheckResponse struct {
 	PatchAvailable         bool                `json:"patch_available"`
 	Patch                  *PatchCheckMetadata `json:"patch"`
 	RolledBackPatchNumbers []int               `json:"rolled_back_patch_numbers"`
+	RemovePatch            *PatchRemoval       `json:"remove_patch,omitempty"`
 }
 
 // PatchCheckMetadata is the patch metadata returned in patch check.
 type PatchCheckMetadata struct {
-	Number        int     `json:"number"`
-	DownloadURL   string  `json:"download_url"`
-	Hash          string  `json:"hash"`
-	HashSignature *string `json:"hash_signature"`
+	Number           int                      `json:"number"`
+	DownloadURL      string                   `json:"download_url"`
+	Hash             string                   `json:"hash"`
+	HashSignature    *string                  `json:"hash_signature"`
+	OfflineExpiresAt *time.Time               `json:"offline_expires_at,omitempty"`
+	Encryption       *PatchEncryptionMetadata `json:"encryption,omitempty"`
+}
+
+// PatchEncryptionMetadata describes an encrypted patch download. The patch
+// hash above remains the plaintext patch hash; EncryptedHash is the hash of
+// the downloaded ciphertext.
+type PatchEncryptionMetadata struct {
+	Algorithm     string `json:"algorithm"`
+	KDF           string `json:"kdf"`
+	KeyID         string `json:"key_id"`
+	Nonce         string `json:"nonce"`
+	AAD           string `json:"aad"`
+	AADHash       string `json:"aad_hash"`
+	EncryptedHash string `json:"encrypted_hash"`
+	DeviceIDHash  string `json:"device_id_hash"`
+	CacheKey      string `json:"cache_key"`
+}
+
+// PatchRemoval tells open updaters to remove an installed patch at startup.
+// Shorebird-compatible clients can use RolledBackPatchNumbers for the same
+// removal decision.
+type PatchRemoval struct {
+	Number           int        `json:"number"`
+	Reason           string     `json:"reason"`
+	OfflineExpiresAt *time.Time `json:"offline_expires_at,omitempty"`
 }
 
 // CreatePatchEventRequest is sent by devices to report install events.
@@ -263,23 +291,25 @@ type CreatePatchResponse struct {
 
 // CreatePatchArtifactRequest is the request for uploading a patch artifact.
 type CreatePatchArtifactRequest struct {
-	Arch            string  `json:"arch"`
-	Platform        string  `json:"platform"`
-	Hash            string  `json:"hash"`
-	Size            int64   `json:"size"`
-	HashSignature   *string `json:"hash_signature"`
-	PodfileLockHash *string `json:"podfile_lock_hash"`
+	Arch             string     `json:"arch"`
+	Platform         string     `json:"platform"`
+	Hash             string     `json:"hash"`
+	Size             int64      `json:"size"`
+	HashSignature    *string    `json:"hash_signature"`
+	PodfileLockHash  *string    `json:"podfile_lock_hash"`
+	OfflineExpiresAt *time.Time `json:"offline_expires_at"`
 }
 
 // CreatePatchArtifactResponse returns the patch artifact metadata.
 type CreatePatchArtifactResponse struct {
-	ID       int    `json:"id"`
-	PatchID  int    `json:"patch_id"`
-	Arch     string `json:"arch"`
-	Platform string `json:"platform"`
-	Hash     string `json:"hash"`
-	Size     int64  `json:"size"`
-	URL      string `json:"url"`
+	ID               int        `json:"id"`
+	PatchID          int        `json:"patch_id"`
+	Arch             string     `json:"arch"`
+	Platform         string     `json:"platform"`
+	Hash             string     `json:"hash"`
+	Size             int64      `json:"size"`
+	URL              string     `json:"url"`
+	OfflineExpiresAt *time.Time `json:"offline_expires_at,omitempty"`
 }
 
 // UpdateReleaseRequest is the PATCH /releases/{id} request body.

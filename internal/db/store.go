@@ -65,6 +65,15 @@ func (nst *NullShorebirdTime) Scan(v interface{}) error {
 	return nst.Time.Scan(v)
 }
 
+// Ptr returns a UTC time pointer when valid, otherwise nil.
+func (nst NullShorebirdTime) Ptr() *time.Time {
+	if !nst.Valid {
+		return nil
+	}
+	t := nst.Time.Time.UTC()
+	return &t
+}
+
 // Ensure unused import warnings are suppressed.
 var _ sql.Scanner = (*ShorebirdTime)(nil)
 
@@ -133,9 +142,10 @@ type Store interface {
 	GetPatchesByReleaseID(ctx context.Context, releaseID int) ([]PatchWithChannelRow, error)
 	PromotePatch(ctx context.Context, patchID, channelID int) error
 	GetLatestPromotedPatch(ctx context.Context, releaseID, channelID int, arch, platform string) (*PatchWithArtifactRow, error)
+	GetPatchByReleaseNumber(ctx context.Context, releaseID, patchNumber int, arch, platform string) (*PatchWithArtifactRow, error)
 
 	// --- Patch Artifacts ---
-	CreatePatchArtifact(ctx context.Context, patchID int, arch, platform, hash, storageKey string, size int64, hashSignature, podfileLockHash *string) (*PatchArtifactRow, error)
+	CreatePatchArtifact(ctx context.Context, patchID int, arch, platform, hash, storageKey string, size int64, hashSignature, podfileLockHash *string, offlineExpiresAt *time.Time) (*PatchArtifactRow, error)
 
 	// --- Patch Events ---
 	InsertPatchEvent(ctx context.Context, appID uuid.UUID, clientID, arch, platform, releaseVersion, eventType string, patchNumber int, timestamp int64, message *string) error
@@ -253,28 +263,30 @@ type PatchWithChannelRow struct {
 
 // PatchWithArtifactRow includes artifact info for patch check.
 type PatchWithArtifactRow struct {
-	ID            int
-	ReleaseID     int
-	Number        int
-	Notes         *string
-	CreatedAt     ShorebirdTime
-	Hash          string
-	StorageKey    string
-	HashSignature *string
+	ID               int
+	ReleaseID        int
+	Number           int
+	Notes            *string
+	CreatedAt        ShorebirdTime
+	Hash             string
+	StorageKey       string
+	HashSignature    *string
+	OfflineExpiresAt NullShorebirdTime
 }
 
 // PatchArtifactRow represents a patch artifact row.
 type PatchArtifactRow struct {
-	ID              int
-	PatchID         int
-	Arch            string
-	Platform        string
-	Hash            string
-	Size            int64
-	StorageKey      string
-	HashSignature   *string
-	PodfileLockHash *string
-	CreatedAt       ShorebirdTime
+	ID               int
+	PatchID          int
+	Arch             string
+	Platform         string
+	Hash             string
+	Size             int64
+	StorageKey       string
+	HashSignature    *string
+	PodfileLockHash  *string
+	OfflineExpiresAt NullShorebirdTime
+	CreatedAt        ShorebirdTime
 }
 
 // UserListRow is used by the admin user listing endpoint.

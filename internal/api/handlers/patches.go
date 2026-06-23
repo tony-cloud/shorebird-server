@@ -97,8 +97,19 @@ func (h *PatchHandler) CreatePatchArtifact(w http.ResponseWriter, r *http.Reques
 	sizeStr := r.FormValue("size")
 	hashSignature := r.FormValue("hash_signature")
 	podfileLockHash := r.FormValue("podfile_lock_hash")
+	offlineExpiresAtRaw := r.FormValue("offline_expires_at")
 
 	size, _ := strconv.ParseInt(sizeStr, 10, 64)
+	var offlineExpiresAt *time.Time
+	if offlineExpiresAtRaw != "" {
+		parsed, err := time.Parse(time.RFC3339, offlineExpiresAtRaw)
+		if err != nil {
+			respondError(w, http.StatusBadRequest, "Invalid offline_expires_at", strPtr(err.Error()))
+			return
+		}
+		utc := parsed.UTC()
+		offlineExpiresAt = &utc
+	}
 
 	// Get the patch to verify it exists and get release info
 	patch, err := h.DB.GetPatchByID(r.Context(), patchID)
@@ -138,20 +149,25 @@ func (h *PatchHandler) CreatePatchArtifact(w http.ResponseWriter, r *http.Reques
 		phl = &podfileLockHash
 	}
 
-	artifact, err := h.DB.CreatePatchArtifact(r.Context(), patchID, arch, platform, hash, storageKey, size, hs, phl)
+	artifact, err := h.DB.CreatePatchArtifact(r.Context(), patchID, arch, platform, hash, storageKey, size, hs, phl, offlineExpiresAt)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "Failed to create artifact record", strPtr(err.Error()))
 		return
 	}
 
+	var responseOfflineExpiresAt *time.Time
+	if artifact.OfflineExpiresAt.Valid {
+		responseOfflineExpiresAt = artifact.OfflineExpiresAt.Ptr()
+	}
 	respondJSON(w, http.StatusCreated, models.CreatePatchArtifactResponse{
-		ID:       artifact.ID,
-		PatchID:  artifact.PatchID,
-		Arch:     artifact.Arch,
-		Platform: artifact.Platform,
-		Hash:     artifact.Hash,
-		Size:     artifact.Size,
-		URL:      uploadURL,
+		ID:               artifact.ID,
+		PatchID:          artifact.PatchID,
+		Arch:             artifact.Arch,
+		Platform:         artifact.Platform,
+		Hash:             artifact.Hash,
+		Size:             artifact.Size,
+		URL:              uploadURL,
+		OfflineExpiresAt: responseOfflineExpiresAt,
 	})
 }
 

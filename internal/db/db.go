@@ -599,7 +599,7 @@ func (db *PgStore) GetLatestPromotedPatch(ctx context.Context, releaseID, channe
 	row := &PatchWithArtifactRow{}
 	err := db.queryRow(ctx,
 		`SELECT p.id, p.release_id, p.number, p.notes, p.created_at,
-		        pa.hash, pa.storage_key, pa.hash_signature
+		        pa.hash, pa.storage_key, pa.hash_signature, pa.offline_expires_at
 		 FROM patches p
 		 JOIN patch_channels pc ON p.id = pc.patch_id
 		 JOIN patch_artifacts pa ON p.id = pa.patch_id
@@ -608,7 +608,27 @@ func (db *PgStore) GetLatestPromotedPatch(ctx context.Context, releaseID, channe
 		 ORDER BY p.number DESC LIMIT 1`,
 		releaseID, channelID, arch, platform,
 	).Scan(&row.ID, &row.ReleaseID, &row.Number, &row.Notes, &row.CreatedAt,
-		&row.Hash, &row.StorageKey, &row.HashSignature)
+		&row.Hash, &row.StorageKey, &row.HashSignature, &row.OfflineExpiresAt)
+	if err != nil {
+		return nil, err
+	}
+	return row, nil
+}
+
+// GetPatchByReleaseNumber returns one patch artifact by release patch number.
+func (db *PgStore) GetPatchByReleaseNumber(ctx context.Context, releaseID, patchNumber int, arch, platform string) (*PatchWithArtifactRow, error) {
+	row := &PatchWithArtifactRow{}
+	err := db.queryRow(ctx,
+		`SELECT p.id, p.release_id, p.number, p.notes, p.created_at,
+		        pa.hash, pa.storage_key, pa.hash_signature, pa.offline_expires_at
+		 FROM patches p
+		 JOIN patch_artifacts pa ON p.id = pa.patch_id
+		 WHERE p.release_id = $1 AND p.number = $2
+		   AND pa.arch = $3 AND pa.platform = $4
+		 LIMIT 1`,
+		releaseID, patchNumber, arch, platform,
+	).Scan(&row.ID, &row.ReleaseID, &row.Number, &row.Notes, &row.CreatedAt,
+		&row.Hash, &row.StorageKey, &row.HashSignature, &row.OfflineExpiresAt)
 	if err != nil {
 		return nil, err
 	}
@@ -618,14 +638,14 @@ func (db *PgStore) GetLatestPromotedPatch(ctx context.Context, releaseID, channe
 // --- Patch artifact queries ---
 
 // CreatePatchArtifact creates a patch artifact record.
-func (db *PgStore) CreatePatchArtifact(ctx context.Context, patchID int, arch, platform, hash, storageKey string, size int64, hashSignature, podfileLockHash *string) (*PatchArtifactRow, error) {
+func (db *PgStore) CreatePatchArtifact(ctx context.Context, patchID int, arch, platform, hash, storageKey string, size int64, hashSignature, podfileLockHash *string, offlineExpiresAt *time.Time) (*PatchArtifactRow, error) {
 	row := &PatchArtifactRow{}
 	err := db.queryRow(ctx,
-		`INSERT INTO patch_artifacts (patch_id, arch, platform, hash, size, storage_key, hash_signature, podfile_lock_hash)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		 RETURNING id, patch_id, arch, platform, hash, size, storage_key, hash_signature, podfile_lock_hash, created_at`,
-		patchID, arch, platform, hash, size, storageKey, hashSignature, podfileLockHash,
-	).Scan(&row.ID, &row.PatchID, &row.Arch, &row.Platform, &row.Hash, &row.Size, &row.StorageKey, &row.HashSignature, &row.PodfileLockHash, &row.CreatedAt)
+		`INSERT INTO patch_artifacts (patch_id, arch, platform, hash, size, storage_key, hash_signature, podfile_lock_hash, offline_expires_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		 RETURNING id, patch_id, arch, platform, hash, size, storage_key, hash_signature, podfile_lock_hash, offline_expires_at, created_at`,
+		patchID, arch, platform, hash, size, storageKey, hashSignature, podfileLockHash, offlineExpiresAt,
+	).Scan(&row.ID, &row.PatchID, &row.Arch, &row.Platform, &row.Hash, &row.Size, &row.StorageKey, &row.HashSignature, &row.PodfileLockHash, &row.OfflineExpiresAt, &row.CreatedAt)
 	if err != nil {
 		return nil, err
 	}

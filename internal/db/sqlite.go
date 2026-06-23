@@ -507,7 +507,16 @@ func (s *SqliteStore) PromotePatch(ctx context.Context, patchID, channelID int) 
 }
 func (s *SqliteStore) GetLatestPromotedPatch(ctx context.Context, releaseID, channelID int, arch, platform string) (*PatchWithArtifactRow, error) {
 	r := &PatchWithArtifactRow{}
-	err := s.db.QueryRowContext(ctx, `SELECT p.id, p.release_id, p.number, p.notes, p.created_at, pa.hash, pa.storage_key, pa.hash_signature FROM patches p JOIN patch_channels pc ON p.id = pc.patch_id JOIN patch_artifacts pa ON p.id = pa.patch_id WHERE p.release_id = ? AND pc.channel_id = ? AND pa.arch = ? AND pa.platform = ? ORDER BY p.number DESC LIMIT 1`, releaseID, channelID, arch, platform).Scan(&r.ID, &r.ReleaseID, &r.Number, &r.Notes, &r.CreatedAt, &r.Hash, &r.StorageKey, &r.HashSignature)
+	err := s.db.QueryRowContext(ctx, `SELECT p.id, p.release_id, p.number, p.notes, p.created_at, pa.hash, pa.storage_key, pa.hash_signature, pa.offline_expires_at FROM patches p JOIN patch_channels pc ON p.id = pc.patch_id JOIN patch_artifacts pa ON p.id = pa.patch_id WHERE p.release_id = ? AND pc.channel_id = ? AND pa.arch = ? AND pa.platform = ? ORDER BY p.number DESC LIMIT 1`, releaseID, channelID, arch, platform).Scan(&r.ID, &r.ReleaseID, &r.Number, &r.Notes, &r.CreatedAt, &r.Hash, &r.StorageKey, &r.HashSignature, &r.OfflineExpiresAt)
+	if err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+func (s *SqliteStore) GetPatchByReleaseNumber(ctx context.Context, releaseID, patchNumber int, arch, platform string) (*PatchWithArtifactRow, error) {
+	r := &PatchWithArtifactRow{}
+	err := s.db.QueryRowContext(ctx, `SELECT p.id, p.release_id, p.number, p.notes, p.created_at, pa.hash, pa.storage_key, pa.hash_signature, pa.offline_expires_at FROM patches p JOIN patch_artifacts pa ON p.id = pa.patch_id WHERE p.release_id = ? AND p.number = ? AND pa.arch = ? AND pa.platform = ? LIMIT 1`, releaseID, patchNumber, arch, platform).Scan(&r.ID, &r.ReleaseID, &r.Number, &r.Notes, &r.CreatedAt, &r.Hash, &r.StorageKey, &r.HashSignature, &r.OfflineExpiresAt)
 	if err != nil {
 		return nil, err
 	}
@@ -515,9 +524,13 @@ func (s *SqliteStore) GetLatestPromotedPatch(ctx context.Context, releaseID, cha
 }
 
 // --- Patch Artifacts ---
-func (s *SqliteStore) CreatePatchArtifact(ctx context.Context, patchID int, arch, platform, hash, storageKey string, size int64, hashSignature, podfileLockHash *string) (*PatchArtifactRow, error) {
+func (s *SqliteStore) CreatePatchArtifact(ctx context.Context, patchID int, arch, platform, hash, storageKey string, size int64, hashSignature, podfileLockHash *string, offlineExpiresAt *time.Time) (*PatchArtifactRow, error) {
 	r := &PatchArtifactRow{PatchID: patchID, Arch: arch, Platform: platform, Hash: hash, Size: size, StorageKey: storageKey, HashSignature: hashSignature, PodfileLockHash: podfileLockHash}
-	err := s.db.QueryRowContext(ctx, `INSERT INTO patch_artifacts (patch_id, arch, platform, hash, size, storage_key, hash_signature, podfile_lock_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, created_at`, patchID, arch, platform, hash, size, storageKey, hashSignature, podfileLockHash).Scan(&r.ID, &r.CreatedAt)
+	var expires interface{}
+	if offlineExpiresAt != nil {
+		expires = offlineExpiresAt.UTC().Format(time.RFC3339Nano)
+	}
+	err := s.db.QueryRowContext(ctx, `INSERT INTO patch_artifacts (patch_id, arch, platform, hash, size, storage_key, hash_signature, podfile_lock_hash, offline_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, created_at, offline_expires_at`, patchID, arch, platform, hash, size, storageKey, hashSignature, podfileLockHash, expires).Scan(&r.ID, &r.CreatedAt, &r.OfflineExpiresAt)
 	if err != nil {
 		return nil, err
 	}
@@ -614,7 +627,7 @@ func (s *SqliteStore) migrate(ctx context.Context) error {
 		CREATE TABLE IF NOT EXISTS release_platform_statuses (id INTEGER PRIMARY KEY AUTOINCREMENT, release_id INTEGER NOT NULL REFERENCES releases(id) ON DELETE CASCADE, platform TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'draft', metadata TEXT DEFAULT '{}', created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), UNIQUE(release_id, platform));
 		CREATE TABLE IF NOT EXISTS release_artifacts (id INTEGER PRIMARY KEY AUTOINCREMENT, release_id INTEGER NOT NULL REFERENCES releases(id) ON DELETE CASCADE, arch TEXT NOT NULL, platform TEXT NOT NULL, hash TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, storage_key TEXT NOT NULL, can_sideload INTEGER NOT NULL DEFAULT 0, podfile_lock_hash TEXT, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));
 		CREATE TABLE IF NOT EXISTS patches (id INTEGER PRIMARY KEY AUTOINCREMENT, release_id INTEGER NOT NULL REFERENCES releases(id) ON DELETE CASCADE, number INTEGER NOT NULL, notes TEXT, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), UNIQUE(release_id, number));
-		CREATE TABLE IF NOT EXISTS patch_artifacts (id INTEGER PRIMARY KEY AUTOINCREMENT, patch_id INTEGER NOT NULL REFERENCES patches(id) ON DELETE CASCADE, arch TEXT NOT NULL, platform TEXT NOT NULL, hash TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, storage_key TEXT NOT NULL, hash_signature TEXT, podfile_lock_hash TEXT, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));
+		CREATE TABLE IF NOT EXISTS patch_artifacts (id INTEGER PRIMARY KEY AUTOINCREMENT, patch_id INTEGER NOT NULL REFERENCES patches(id) ON DELETE CASCADE, arch TEXT NOT NULL, platform TEXT NOT NULL, hash TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, storage_key TEXT NOT NULL, hash_signature TEXT, podfile_lock_hash TEXT, offline_expires_at TEXT, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));
 		CREATE TABLE IF NOT EXISTS patch_channels (id INTEGER PRIMARY KEY AUTOINCREMENT, patch_id INTEGER NOT NULL REFERENCES patches(id) ON DELETE CASCADE, channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE, promoted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), UNIQUE(patch_id, channel_id));
 		CREATE TABLE IF NOT EXISTS patch_events (id INTEGER PRIMARY KEY AUTOINCREMENT, app_id TEXT NOT NULL, client_id TEXT NOT NULL, arch TEXT NOT NULL, patch_number INTEGER NOT NULL, platform TEXT NOT NULL, release_version TEXT NOT NULL, event_type TEXT NOT NULL, timestamp INTEGER NOT NULL, message TEXT, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));
 		CREATE TABLE IF NOT EXISTS rolled_back_patches (id INTEGER PRIMARY KEY AUTOINCREMENT, release_id INTEGER NOT NULL REFERENCES releases(id) ON DELETE CASCADE, patch_number INTEGER NOT NULL, rolled_back_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), UNIQUE(release_id, patch_number));
@@ -639,6 +652,7 @@ func (s *SqliteStore) migrate(ctx context.Context) error {
 		`ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE users ADD COLUMN auth_provider TEXT NOT NULL DEFAULT 'password'`,
+		`ALTER TABLE patch_artifacts ADD COLUMN offline_expires_at TEXT`,
 	}
 	for _, stmt := range alter {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {

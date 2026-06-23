@@ -137,6 +137,7 @@ CREATE TABLE patch_artifacts (
     storage_key TEXT NOT NULL,
     hash_signature TEXT,
     podfile_lock_hash TEXT,
+    offline_expires_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

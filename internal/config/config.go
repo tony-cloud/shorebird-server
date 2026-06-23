@@ -7,13 +7,14 @@ import (
 
 // Config holds all configuration for the Shorebird server.
 type Config struct {
-	Server  ServerConfig
-	DB      DBConfig
-	Storage StorageConfig
-	Auth    AuthConfig
-	Email   EmailConfig
-	Admin   AdminConfig
-	Redis   RedisConfig
+	Server        ServerConfig
+	DB            DBConfig
+	Storage       StorageConfig
+	Auth          AuthConfig
+	Email         EmailConfig
+	Admin         AdminConfig
+	Redis         RedisConfig
+	PatchDelivery PatchDeliveryConfig
 }
 
 // ServerConfig holds HTTP server configuration.
@@ -81,6 +82,16 @@ type RedisConfig struct {
 	DB       int
 }
 
+// PatchDeliveryConfig controls optional device-facing patch encryption.
+type PatchDeliveryConfig struct {
+	// EncryptionMode is "off" or "per_device_aes_gcm".
+	EncryptionMode string
+	// AESSecret is a server-side secret used to derive per-device AES keys.
+	AESSecret string
+	// CacheEncryptedPatches stores derived ciphertext objects for reuse.
+	CacheEncryptedPatches bool
+}
+
 // Load reads configuration from environment variables with sensible defaults.
 func Load() *Config {
 	port := envOrDefault("SERVER_PORT", "8080")
@@ -130,6 +141,11 @@ func Load() *Config {
 			Password: envOrDefault("REDIS_PASSWORD", ""),
 			DB:       0,
 		},
+		PatchDelivery: PatchDeliveryConfig{
+			EncryptionMode:        envOrDefault("PATCH_DELIVERY_ENCRYPTION", "off"),
+			AESSecret:             envOrDefault("PATCH_DELIVERY_AES_SECRET", ""),
+			CacheEncryptedPatches: envBoolOrDefault("PATCH_DELIVERY_CACHE_ENCRYPTED", true),
+		},
 	}
 }
 
@@ -138,4 +154,12 @@ func envOrDefault(key, defaultVal string) string {
 		return v
 	}
 	return defaultVal
+}
+
+func envBoolOrDefault(key string, defaultVal bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return defaultVal
+	}
+	return v == "true" || v == "1" || v == "yes"
 }
