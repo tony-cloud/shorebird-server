@@ -1,0 +1,985 @@
+openapi: 3.1.0
+info:
+  title: Open Shorebird Self-Hosted API
+  version: 0.1.0
+  description: |
+    OpenAPI contract for the self-hosted Shorebird-compatible server in this
+    workspace. The API preserves the route shape expected by the open CLI,
+    CodePush client, and updater while using local/self-hosted services.
+servers:
+  - url: http://localhost:8080
+security:
+  - bearerAuth: []
+tags:
+  - name: auth
+  - name: apps
+  - name: organizations
+  - name: releases
+  - name: patches
+  - name: devices
+  - name: diagnostics
+  - name: admin
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      security: []
+      tags: [diagnostics]
+      responses:
+        '200':
+          description: Server health and backend status.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /openapi.yaml:
+    get:
+      operationId: getOpenAPISpec
+      security: []
+      tags: [diagnostics]
+      responses:
+        '200':
+          description: This OpenAPI document.
+          content:
+            application/yaml:
+              schema:
+                type: string
+  /api/v1/openapi.yaml:
+    get:
+      operationId: getOpenAPISpecV1
+      security: []
+      tags: [diagnostics]
+      responses:
+        '200':
+          description: This OpenAPI document served from a versioned path.
+          content:
+            application/yaml:
+              schema:
+                type: string
+  /auth/token:
+    post:
+      operationId: createAuthToken
+      security: []
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: JWT and user metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokenResponse'
+  /auth/register:
+    post:
+      operationId: createAuthUser
+      security: []
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '200':
+          description: Registered user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrivateUser'
+  /auth/refresh:
+    post:
+      operationId: refreshAuthToken
+      tags: [auth]
+      responses:
+        '200':
+          description: Refreshed JWT.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokenResponse'
+  /auth/public-settings:
+    get:
+      operationId: getAuthPublicSettings
+      security: []
+      tags: [auth]
+      responses:
+        '200':
+          description: Public registration and SSO settings.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /api/v1/patches/check:
+    post:
+      operationId: patchCheck
+      security: []
+      tags: [devices]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchCheckRequest'
+      responses:
+        '200':
+          description: Device patch check result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PatchCheckResponse'
+  /api/v1/patches/events:
+    post:
+      operationId: patchEvents
+      security: []
+      tags: [devices]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '204':
+          description: Event accepted.
+  /api/v1/users/me:
+    get:
+      operationId: getCurrentUser
+      tags: [auth]
+      responses:
+        '200':
+          description: Current user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrivateUser'
+    patch:
+      operationId: updateCurrentUserPassword
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password:
+                  type: string
+                new_password:
+                  type: string
+      responses:
+        '200':
+          description: Password updated.
+  /api/v1/users:
+    post:
+      operationId: createUser
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+      responses:
+        '200':
+          description: Created user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrivateUser'
+  /api/v1/apps:
+    get:
+      operationId: getApps
+      tags: [apps]
+      responses:
+        '200':
+          description: Apps visible to the current user.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [apps]
+                properties:
+                  apps:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/App'
+    post:
+      operationId: createApp
+      tags: [apps]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAppRequest'
+      responses:
+        '200':
+          description: Created app.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/App'
+  /api/v1/apps/{appId}:
+    delete:
+      operationId: deleteApp
+      tags: [apps]
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+      responses:
+        '204':
+          description: App deleted.
+  /api/v1/apps/{appId}/transfer:
+    patch:
+      operationId: transferApp
+      tags: [apps]
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [organization_id]
+              properties:
+                organization_id:
+                  type: integer
+      responses:
+        '200':
+          description: Transferred app.
+  /api/v1/apps/{appId}/channels:
+    get:
+      operationId: getChannels
+      tags: [apps]
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+      responses:
+        '200':
+          description: App channels.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [channels]
+                properties:
+                  channels:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Channel'
+    post:
+      operationId: createChannel
+      tags: [apps]
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateChannelRequest'
+      responses:
+        '200':
+          description: Created channel.
+  /api/v1/apps/{appId}/releases:
+    get:
+      operationId: getReleases
+      tags: [releases]
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+      responses:
+        '200':
+          description: App releases.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [releases]
+                properties:
+                  releases:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Release'
+    post:
+      operationId: createRelease
+      tags: [releases]
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReleaseRequest'
+      responses:
+        '200':
+          description: Created release.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Release'
+  /api/v1/apps/{appId}/releases/{releaseId}:
+    patch:
+      operationId: updateRelease
+      tags: [releases]
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+        - $ref: '#/components/parameters/ReleaseId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateReleaseRequest'
+      responses:
+        '200':
+          description: Updated release.
+    delete:
+      operationId: deleteRelease
+      tags: [releases]
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+        - $ref: '#/components/parameters/ReleaseId'
+      responses:
+        '204':
+          description: Release deleted.
+  /api/v1/apps/{appId}/releases/{releaseId}/artifacts:
+    get:
+      operationId: getReleaseArtifacts
+      tags: [releases]
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+        - $ref: '#/components/parameters/ReleaseId'
+      responses:
+        '200':
+          description: Release artifacts.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+    post:
+      operationId: createReleaseArtifact
+      tags: [releases]
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+        - $ref: '#/components/parameters/ReleaseId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReleaseArtifactRequest'
+      responses:
+        '200':
+          description: Uploaded release artifact metadata.
+  /api/v1/apps/{appId}/patches:
+    post:
+      operationId: createPatch
+      tags: [patches]
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePatchRequest'
+      responses:
+        '200':
+          description: Created patch.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Patch'
+  /api/v1/apps/{appId}/patches/{patchId}:
+    patch:
+      operationId: updatePatch
+      tags: [patches]
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+        - $ref: '#/components/parameters/PatchId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePatchRequest'
+      responses:
+        '200':
+          description: Updated patch.
+  /api/v1/apps/{appId}/patches/{patchId}/artifacts:
+    post:
+      operationId: createPatchArtifact
+      tags: [patches]
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+        - $ref: '#/components/parameters/PatchId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePatchArtifactRequest'
+      responses:
+        '200':
+          description: Uploaded patch artifact metadata.
+  /api/v1/apps/{appId}/releases/{releaseId}/patches:
+    get:
+      operationId: getReleasePatches
+      tags: [patches]
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+        - $ref: '#/components/parameters/ReleaseId'
+      responses:
+        '200':
+          description: Patches for a release.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [patches]
+                properties:
+                  patches:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Patch'
+  /api/v1/apps/{appId}/patches/promote:
+    post:
+      operationId: promotePatch
+      tags: [patches]
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PromotePatchRequest'
+      responses:
+        '200':
+          description: Promoted patch.
+  /api/v1/apps/{appId}/patches/rollback:
+    post:
+      operationId: rollbackPatch
+      tags: [patches]
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Rolled back patch.
+  /api/v1/organizations:
+    get:
+      operationId: getOrganizations
+      tags: [organizations]
+      responses:
+        '200':
+          description: Organizations.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [organizations]
+                properties:
+                  organizations:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Organization'
+    post:
+      operationId: createOrganization
+      tags: [organizations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                organization_type:
+                  type: string
+      responses:
+        '200':
+          description: Created organization.
+  /api/v1/organizations/{orgId}/users:
+    get:
+      operationId: getOrganizationUsers
+      tags: [organizations]
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+      responses:
+        '200':
+          description: Organization users.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [users]
+                properties:
+                  users:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/OrganizationUser'
+    post:
+      operationId: updateOrganizationUser
+      tags: [organizations]
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, role]
+              properties:
+                email:
+                  type: string
+                role:
+                  type: string
+      responses:
+        '200':
+          description: Organization user role updated.
+  /api/v1/apps/{appId}/metrics/active-hours:
+    get:
+      operationId: getActiveHours
+      tags: [apps]
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+      responses:
+        '200':
+          description: Active hour metrics.
+  /api/v1/apps/{appId}/metrics/unique-users:
+    get:
+      operationId: getUniqueUsers
+      tags: [apps]
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+      responses:
+        '200':
+          description: Unique user metrics.
+  /api/v1/apps/{appId}/metrics/version-distribution:
+    get:
+      operationId: getVersionDistribution
+      tags: [apps]
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+      responses:
+        '200':
+          description: Version distribution metrics.
+  /api/v1/apps/{appId}/metrics/patch-adoption:
+    get:
+      operationId: getPatchAdoption
+      tags: [apps]
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+      responses:
+        '200':
+          description: Patch adoption metrics.
+  /api/v1/diagnostics/gcp_upload:
+    get:
+      operationId: getGCPUploadSpeedTestURL
+      tags: [diagnostics]
+      responses:
+        '200':
+          description: Upload speed-test URL.
+  /api/v1/diagnostics/gcp_download:
+    get:
+      operationId: getGCPDownloadSpeedTestURL
+      tags: [diagnostics]
+      responses:
+        '200':
+          description: Download speed-test URL.
+  /api/v1/admin/users:
+    get:
+      operationId: listAdminUsers
+      tags: [admin]
+      responses:
+        '200':
+          description: Admin user list.
+  /api/v1/admin/users/{userId}/verify-email:
+    post:
+      operationId: verifyAdminUserEmail
+      tags: [admin]
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: Email marked verified.
+  /api/v1/admin/users/{userId}/admin:
+    post:
+      operationId: setAdminUser
+      tags: [admin]
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: Admin flag updated.
+  /api/v1/admin/settings:
+    get:
+      operationId: getAdminSettings
+      tags: [admin]
+      responses:
+        '200':
+          description: Registration and SSO settings.
+    put:
+      operationId: updateAdminSettings
+      tags: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Settings updated.
+  /api/v1/admin/patches/{patchId}/target-devices:
+    get:
+      operationId: getPatchTargetDevices
+      tags: [admin]
+      parameters:
+        - $ref: '#/components/parameters/PatchId'
+      responses:
+        '200':
+          description: Targeted device IDs.
+    post:
+      operationId: addPatchTargetDevice
+      tags: [admin]
+      parameters:
+        - $ref: '#/components/parameters/PatchId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [client_id]
+              properties:
+                client_id:
+                  type: string
+      responses:
+        '200':
+          description: Target device added.
+  /api/v1/admin/patches/{patchId}/target-devices/{clientId}:
+    delete:
+      operationId: removePatchTargetDevice
+      tags: [admin]
+      parameters:
+        - $ref: '#/components/parameters/PatchId'
+        - name: clientId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Target device removed.
+  /api/v1/admin/apps/{appId}/events:
+    get:
+      operationId: getPatchEvents
+      tags: [admin]
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+      responses:
+        '200':
+          description: Patch event list.
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    AppId:
+      name: appId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    OrgId:
+      name: orgId
+      in: path
+      required: true
+      schema:
+        type: integer
+    ReleaseId:
+      name: releaseId
+      in: path
+      required: true
+      schema:
+        type: integer
+    PatchId:
+      name: patchId
+      in: path
+      required: true
+      schema:
+        type: integer
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema:
+        type: integer
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+        details:
+          type: [string, 'null']
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+    RegisterRequest:
+      type: object
+      required: [email, password, name]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+        name:
+          type: string
+    AuthTokenResponse:
+      type: object
+      additionalProperties: true
+      properties:
+        token:
+          type: string
+        refresh_token:
+          type: string
+        user:
+          $ref: '#/components/schemas/PrivateUser'
+    PrivateUser:
+      type: object
+      additionalProperties: true
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+        name:
+          type: string
+    PublicUser:
+      type: object
+      additionalProperties: true
+    CreateUserRequest:
+      type: object
+      required: [email, password, name]
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+        name:
+          type: string
+    Organization:
+      type: object
+      additionalProperties: true
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        type:
+          type: string
+    OrganizationUser:
+      type: object
+      additionalProperties: true
+    App:
+      type: object
+      additionalProperties: true
+      properties:
+        app_id:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+    CreateAppRequest:
+      type: object
+      required: [display_name]
+      properties:
+        display_name:
+          type: string
+        organization_id:
+          type: integer
+    Channel:
+      type: object
+      additionalProperties: true
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+    CreateChannelRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+    Release:
+      type: object
+      additionalProperties: true
+      properties:
+        id:
+          type: integer
+        version:
+          type: string
+        flutter_revision:
+          type: string
+    CreateReleaseRequest:
+      type: object
+      additionalProperties: true
+      required: [version, flutter_revision]
+      properties:
+        version:
+          type: string
+        flutter_revision:
+          type: string
+        flutter_version:
+          type: string
+        platform_statuses:
+          type: object
+          additionalProperties: true
+    UpdateReleaseRequest:
+      type: object
+      additionalProperties: true
+    CreateReleaseArtifactRequest:
+      type: object
+      additionalProperties: true
+      required: [arch, platform, hash, size, storage_key]
+      properties:
+        arch:
+          type: string
+        platform:
+          type: string
+        hash:
+          type: string
+        size:
+          type: integer
+        storage_key:
+          type: string
+        can_sideload:
+          type: boolean
+    ReleaseArtifact:
+      type: object
+      additionalProperties: true
+    Patch:
+      type: object
+      additionalProperties: true
+      properties:
+        id:
+          type: integer
+        number:
+          type: integer
+    CreatePatchRequest:
+      type: object
+      additionalProperties: true
+      required: [release_id]
+      properties:
+        release_id:
+          type: integer
+        notes:
+          type: string
+    UpdatePatchRequest:
+      type: object
+      additionalProperties: true
+    CreatePatchArtifactRequest:
+      type: object
+      additionalProperties: true
+      required: [arch, platform, hash, size, storage_key]
+      properties:
+        arch:
+          type: string
+        platform:
+          type: string
+        hash:
+          type: string
+        size:
+          type: integer
+        storage_key:
+          type: string
+        hash_signature:
+          type: string
+        podfile_lock_hash:
+          type: string
+        offline_expires_at:
+          type: string
+          format: date-time
+    PromotePatchRequest:
+      type: object
+      required: [patch_id, channel]
+      properties:
+        patch_id:
+          type: integer
+        channel:
+          type: string
+    PatchCheckRequest:
+      type: object
+      additionalProperties: true
+      required: [app_id, channel, release_version, platform, arch]
+      properties:
+        app_id:
+          type: string
+          format: uuid
+        channel:
+          type: string
+        release_version:
+          type: string
+        platform:
+          type: string
+        arch:
+          type: string
+        current_patch_number:
+          type: [integer, 'null']
+        client_id:
+          type: [string, 'null']
+        accept_encrypted_patch:
+          type: boolean
+    PatchCheckResponse:
+      type: object
+      additionalProperties: true
+      properties:
+        patch_available:
+          type: boolean
+        patch:
+          type: [object, 'null']
+        remove_patch:
+          type: [object, 'null']
+        rolled_back_patch_numbers:
+          type: array
+          items:
+            type: integer
+    PatchEncryptionMetadata:
+      type: object
+      additionalProperties: true

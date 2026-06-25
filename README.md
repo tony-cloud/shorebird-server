@@ -1,6 +1,6 @@
 # Shorebird Self-Hosted Server
 
-A self-hosted replacement for the Shorebird CodePush API server (`api.shorebird.dev`).
+A self-hosted replacement for the hosted Shorebird CodePush API server.
 See `../shorebird/OPEN_SOURCE_REPLACEMENTS.md` for the current audit of public upstream
 Shorebird components and the local replacements for hosted Shorebird services.
 

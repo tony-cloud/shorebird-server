@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	_ "embed"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,6 +15,9 @@ import (
 	"github.com/shorebird-server/internal/email"
 	"github.com/shorebird-server/internal/storage"
 )
+
+//go:embed openapi.yaml
+var openAPISpec []byte
 
 // NewRouter creates the HTTP router with all API routes.
 func NewRouter(authService *authpkg.Service, database db.Store, store storage.Store, mailer *email.Mailer, baseURL string, patchDelivery PatchDeliveryConfig) *chi.Mux {
@@ -47,6 +51,9 @@ func NewRouter(authService *authpkg.Service, database db.Store, store storage.St
 
 	// Auth middleware
 	authMw := middleware.AuthMiddleware(authService, database)
+
+	r.Get("/openapi.yaml", serveOpenAPISpec)
+	r.Get("/api/v1/openapi.yaml", serveOpenAPISpec)
 
 	// --- Local storage upload/download (used when STORAGE_DRIVER=local) ---
 	r.Route("/storage", func(r chi.Router) {
@@ -186,6 +193,12 @@ func NewRouter(authService *authpkg.Service, database db.Store, store storage.St
 	})
 
 	return r
+}
+
+func serveOpenAPISpec(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/yaml; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(openAPISpec)
 }
 
 // findWebDir locates the web/ directory. It searches relative to the
