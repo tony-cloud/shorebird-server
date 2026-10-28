@@ -2,6 +2,7 @@ package handlers
 
 import (
 	_ "embed"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -22,7 +23,7 @@ var openAPISpec []byte
 // NewRouter creates the HTTP router with all API routes.
 func NewRouter(authService *authpkg.Service, database db.Store, store storage.Store, mailer *email.Mailer, baseURL string, patchDelivery PatchDeliveryConfig, signingConfig ...SigningConfig) *chi.Mux {
 	r := chi.NewRouter()
-	r.Use(chimw.Logger)
+	r.Use(pathOnlyRequestLogger(log.New(os.Stdout, "", log.LstdFlags)))
 	r.Use(chimw.Recoverer)
 
 	// CORS
