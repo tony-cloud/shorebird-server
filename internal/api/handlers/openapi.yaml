@@ -261,6 +261,33 @@ paths:
       responses:
         '204':
           description: App deleted.
+  /api/v1/apps/{appId}/signing-key:
+    get:
+      operationId: getManagedSigningKey
+      tags: [apps]
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+      responses:
+        '200':
+          description: Persistent managed public key; private material is never returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [signing_key]
+                properties:
+                  signing_key:
+                    type: object
+                    required: [id, public_key_pem]
+                    properties:
+                      id:
+                        type: integer
+                      public_key_pem:
+                        type: string
+        '403':
+          description: Organization admin access required.
+        '503':
+          description: Managed signing wrapping key is unavailable.
   /api/v1/apps/{appId}/transfer:
     patch:
       operationId: transferApp
@@ -399,7 +426,7 @@ paths:
       requestBody:
         required: true
         content:
-          application/json:
+          multipart/form-data:
             schema:
               $ref: '#/components/schemas/CreateReleaseArtifactRequest'
       responses:
@@ -450,7 +477,7 @@ paths:
       requestBody:
         required: true
         content:
-          application/json:
+          multipart/form-data:
             schema:
               $ref: '#/components/schemas/CreatePatchArtifactRequest'
       responses:
@@ -811,6 +838,9 @@ components:
       type: object
       required: [message]
       properties:
+        code:
+          type: string
+          description: Stable code for signing availability or required encrypted-delivery capability errors.
         message:
           type: string
         details:
@@ -922,6 +952,18 @@ components:
           type: string
         flutter_revision:
           type: string
+        platforms:
+          type: object
+          additionalProperties:
+            type: object
+            required: [status]
+            properties:
+              status:
+                type: string
+                enum: [draft, active, inactive]
+              signing_mode:
+                type: string
+                enum: [managed, customer, unsigned]
     CreateReleaseRequest:
       type: object
       additionalProperties: true
@@ -942,7 +984,7 @@ components:
     CreateReleaseArtifactRequest:
       type: object
       additionalProperties: true
-      required: [arch, platform, hash, size, storage_key]
+      required: [arch, platform, hash, size, filename]
       properties:
         arch:
           type: string
@@ -952,13 +994,30 @@ components:
           type: string
         size:
           type: integer
-        storage_key:
+        filename:
           type: string
         can_sideload:
           type: boolean
+        signing:
+          type: string
+          description: JSON encoding of mode (managed, customer, unsigned) and key_id (managed only).
     ReleaseArtifact:
       type: object
       additionalProperties: true
+      properties:
+        signing:
+          $ref: '#/components/schemas/ArtifactSigning'
+    ArtifactSigning:
+      type: object
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [managed, customer, unsigned]
+        key_id:
+          type: integer
+        public_key_pem:
+          type: string
     Patch:
       type: object
       additionalProperties: true
@@ -982,7 +1041,7 @@ components:
     CreatePatchArtifactRequest:
       type: object
       additionalProperties: true
-      required: [arch, platform, hash, size, storage_key]
+      required: [arch, platform, hash, size]
       properties:
         arch:
           type: string
@@ -992,8 +1051,6 @@ components:
           type: string
         size:
           type: integer
-        storage_key:
-          type: string
         hash_signature:
           type: string
         podfile_lock_hash:
@@ -1031,10 +1088,25 @@ components:
           type: [string, 'null']
         accept_encrypted_patch:
           type: boolean
+          description: Required true when per_device_aes_gcm delivery is configured.
+        nonce:
+          type: string
+          format: uuid
+          description: UUIDv4 echoed in a managed release's signed response payload.
     PatchCheckResponse:
       type: object
       additionalProperties: true
       properties:
+        authentication:
+          type: object
+          required: [payload, signature]
+          properties:
+            payload:
+              type: string
+              description: Standard base64 of UTF-8 JSON v1 request context, patch offer, and rollback numbers.
+            signature:
+              type: string
+              description: Standard base64 RSA PKCS1v15 SHA-256 signature over the raw decoded payload bytes.
         patch_available:
           type: boolean
         patch:

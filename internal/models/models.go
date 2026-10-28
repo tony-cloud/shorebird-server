@@ -50,18 +50,25 @@ type Channel struct {
 	Name  string    `json:"name"`
 }
 
+// ReleasePlatformDetails is the current CLI's per-platform release descriptor.
+type ReleasePlatformDetails struct {
+	Status      string  `json:"status"`
+	SigningMode *string `json:"signing_mode,omitempty"`
+}
+
 // Release represents a release of an application.
 type Release struct {
-	ID               int               `json:"id"`
-	AppID            uuid.UUID         `json:"app_id"`
-	Version          string            `json:"version"`
-	FlutterRevision  string            `json:"flutter_revision"`
-	FlutterVersion   *string           `json:"flutter_version"`
-	DisplayName      *string           `json:"display_name"`
-	Notes            *string           `json:"notes"`
-	PlatformStatuses map[string]string `json:"platform_statuses"`
-	CreatedAt        time.Time         `json:"created_at"`
-	UpdatedAt        time.Time         `json:"updated_at"`
+	ID               int                               `json:"id"`
+	AppID            uuid.UUID                         `json:"app_id"`
+	Version          string                            `json:"version"`
+	FlutterRevision  string                            `json:"flutter_revision"`
+	FlutterVersion   *string                           `json:"flutter_version"`
+	DisplayName      *string                           `json:"display_name"`
+	Notes            *string                           `json:"notes"`
+	PlatformStatuses map[string]string                 `json:"platform_statuses"`
+	CreatedAt        time.Time                         `json:"created_at"`
+	UpdatedAt        time.Time                         `json:"updated_at"`
+	Platforms        map[string]ReleasePlatformDetails `json:"platforms"`
 }
 
 // ReleaseStatus values.
@@ -80,18 +87,26 @@ const (
 	PlatformLinux   = "linux"
 )
 
+// ArtifactSigning declares the trust anchor embedded in a baseline artifact.
+type ArtifactSigning struct {
+	Mode         string  `json:"mode"`
+	KeyID        *int    `json:"key_id,omitempty"`
+	PublicKeyPEM *string `json:"public_key_pem,omitempty"`
+}
+
 // ReleaseArtifact represents metadata about a release artifact.
 type ReleaseArtifact struct {
-	ID              int       `json:"id"`
-	ReleaseID       int       `json:"release_id"`
-	Arch            string    `json:"arch"`
-	Platform        string    `json:"platform"`
-	Hash            string    `json:"hash"`
-	Size            int64     `json:"size"`
-	URL             string    `json:"url"`
-	CanSideload     bool      `json:"can_sideload"`
-	PodfileLockHash *string   `json:"podfile_lock_hash"`
-	CreatedAt       time.Time `json:"created_at"`
+	ID              int              `json:"id"`
+	ReleaseID       int              `json:"release_id"`
+	Arch            string           `json:"arch"`
+	Platform        string           `json:"platform"`
+	Hash            string           `json:"hash"`
+	Size            int64            `json:"size"`
+	URL             string           `json:"url"`
+	CanSideload     bool             `json:"can_sideload"`
+	PodfileLockHash *string          `json:"podfile_lock_hash"`
+	CreatedAt       time.Time        `json:"created_at"`
+	Signing         *ArtifactSigning `json:"signing,omitempty"`
 }
 
 // Patch represents a patch (hotfix update) for a release.
@@ -133,14 +148,22 @@ type PatchCheckRequest struct {
 	ClientID             *string `json:"client_id"`
 	CurrentPatchNumber   *int    `json:"current_patch_number"`
 	AcceptEncryptedPatch bool    `json:"accept_encrypted_patch,omitempty"`
+	Nonce                string  `json:"nonce,omitempty"`
 }
 
 // PatchCheckResponse is the POST /patches/check response body.
 type PatchCheckResponse struct {
-	PatchAvailable         bool                `json:"patch_available"`
-	Patch                  *PatchCheckMetadata `json:"patch"`
-	RolledBackPatchNumbers []int               `json:"rolled_back_patch_numbers"`
-	RemovePatch            *PatchRemoval       `json:"remove_patch,omitempty"`
+	PatchAvailable         bool                         `json:"patch_available"`
+	Patch                  *PatchCheckMetadata          `json:"patch"`
+	RolledBackPatchNumbers []int                        `json:"rolled_back_patch_numbers"`
+	RemovePatch            *PatchRemoval                `json:"remove_patch,omitempty"`
+	Authentication         *PatchResponseAuthentication `json:"authentication,omitempty"`
+}
+
+// PatchResponseAuthentication binds delivery and rollback to a request nonce and release context.
+type PatchResponseAuthentication struct {
+	Payload   string `json:"payload"`
+	Signature string `json:"signature"`
 }
 
 // PatchCheckMetadata is the patch metadata returned in patch check.

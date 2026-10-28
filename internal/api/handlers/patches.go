@@ -18,6 +18,7 @@ import (
 type PatchHandler struct {
 	DB      db.Store
 	Storage storage.Store
+	Signing *SigningHandler
 }
 
 // CreatePatch handles POST /api/v1/apps/{appId}/patches
@@ -126,6 +127,11 @@ func (h *PatchHandler) CreatePatchArtifact(w http.ResponseWriter, r *http.Reques
 	}
 	if release.AppID != parsedAppID {
 		respondError(w, http.StatusNotFound, "Patch not found for this app", nil)
+		return
+	}
+
+	hash, hashSignature, ok := h.Signing.patchHashSignature(w, r, parsedAppID, release.ID, arch, platform, hash, hashSignature)
+	if !ok {
 		return
 	}
 

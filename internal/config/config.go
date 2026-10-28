@@ -15,6 +15,7 @@ type Config struct {
 	Admin         AdminConfig
 	Redis         RedisConfig
 	PatchDelivery PatchDeliveryConfig
+	Signing       SigningConfig
 }
 
 // ServerConfig holds HTTP server configuration.
@@ -84,13 +85,16 @@ type RedisConfig struct {
 
 // PatchDeliveryConfig controls optional device-facing patch encryption.
 type PatchDeliveryConfig struct {
-	// EncryptionMode is "off" or "per_device_aes_gcm".
+	// EncryptionMode is "off" or required "per_device_aes_gcm".
 	EncryptionMode string
 	// AESSecret is a server-side secret used to derive per-device AES keys.
 	AESSecret string
 	// CacheEncryptedPatches stores derived ciphertext objects for reuse.
 	CacheEncryptedPatches bool
 }
+
+// SigningConfig holds the separately provisioned managed-signing wrapping key.
+type SigningConfig struct{ MasterKey string }
 
 // Load reads configuration from environment variables with sensible defaults.
 func Load() *Config {
@@ -120,6 +124,7 @@ func Load() *Config {
 			S3ReleaseBucket: envOrDefault("STORAGE_S3_RELEASE_BUCKET", "shorebird-releases"),
 			S3PatchBucket:   envOrDefault("STORAGE_S3_PATCH_BUCKET", "shorebird-patches"),
 		},
+		Signing: SigningConfig{MasterKey: os.Getenv("PATCH_SIGNING_MASTER_KEY")},
 		Auth: AuthConfig{
 			JWTSecret:     envOrDefault("JWT_SECRET", "change-me-in-production-use-a-long-random-string"),
 			TokenDuration: 24 * time.Hour,

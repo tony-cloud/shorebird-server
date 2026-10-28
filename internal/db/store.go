@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"time"
 
@@ -131,8 +132,13 @@ type Store interface {
 	GetReleasePlatformStatuses(ctx context.Context, releaseID int) (map[string]string, error)
 	DeleteRelease(ctx context.Context, releaseID int) error
 
+	// --- Managed signing keys ---
+	GetAppSigningKey(ctx context.Context, appID uuid.UUID) (*SigningKeyRow, error)
+	GetSigningKeyByID(ctx context.Context, keyID int) (*SigningKeyRow, error)
+	CreateAppSigningKey(ctx context.Context, appID uuid.UUID, publicKeyPEM, wrappedPrivateKey string) (*SigningKeyRow, error)
+
 	// --- Release Artifacts ---
-	CreateReleaseArtifact(ctx context.Context, releaseID int, arch, platform, hash, storageKey string, size int64, canSideload bool, podfileLockHash *string) (*ArtifactRow, error)
+	CreateReleaseArtifact(ctx context.Context, releaseID int, arch, platform, hash, storageKey string, size int64, canSideload bool, podfileLockHash *string, signing ...*ReleaseSigningPolicy) (*ArtifactRow, error)
 	GetReleaseArtifacts(ctx context.Context, releaseID int, arch, platform *string) ([]ArtifactRow, error)
 
 	// --- Patches ---
@@ -182,10 +188,11 @@ type UserRow struct {
 
 // OrgMembershipRow represents an organization membership query result.
 type OrgMembershipRow struct {
-	OrgID   int
-	OrgName string
-	OrgType string
-	Role    string
+	OrgID     int
+	OrgName   string
+	OrgType   string
+	Role      string
+	CreatedAt ShorebirdTime
 }
 
 // OrganizationUserRow is used for organization member listing.
@@ -230,6 +237,21 @@ type ReleaseRow struct {
 	UpdatedAt       ShorebirdTime
 }
 
+// ReleaseSigningPolicy is immutable across a release platform's baseline and supplements.
+// Nil policy identifies a legacy release without declared signing metadata.
+type ReleaseSigningPolicy struct {
+	Mode  string
+	KeyID *int
+}
+
+// SigningKeyRow stores only encrypted private key material alongside its public key.
+type SigningKeyRow struct {
+	ID                int
+	AppID             uuid.UUID
+	PublicKeyPEM      string
+	WrappedPrivateKey string
+}
+
 // ArtifactRow represents a release artifact row.
 type ArtifactRow struct {
 	ID              int
@@ -242,6 +264,8 @@ type ArtifactRow struct {
 	CanSideload     bool
 	PodfileLockHash *string
 	CreatedAt       ShorebirdTime
+	SigningMode     *string
+	SigningKeyID    *int
 }
 
 // PatchRow represents a patch row.
@@ -321,4 +345,14 @@ type PatchEventActivityRow struct {
 	Platform       string
 	ReleaseVersion string
 	PatchNumber    int
+}
+
+// ErrSigningPolicyConflict prevents replacing the trust anchor of an existing baseline.
+var ErrSigningPolicyConflict = errors.New("release signing policy is immutable")
+
+func artifactSigningValues(signing []*ReleaseSigningPolicy) (*string, *int) {
+	if len(signing) == 0 || signing[0] == nil {
+		return nil, nil
+	}
+	return &signing[0].Mode, signing[0].KeyID
 }

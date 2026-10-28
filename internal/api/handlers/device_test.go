@@ -177,33 +177,14 @@ func (f *patchCheckFixture) createPatch(t *testing.T, number int, offlineExpires
 	}
 }
 
-func TestPatchCheckReturnsPlaintextPatchWhenEncryptedDeliveryNotAccepted(t *testing.T) {
+func TestPatchCheckRejectsPlaintextDowngradeWhenEncryptionRequired(t *testing.T) {
 	fixture := newPatchCheckFixture(t)
-	fixture.handler.PatchDelivery = PatchDeliveryConfig{
-		EncryptionMode:        PatchDeliveryEncryptionPerDeviceAESGCM,
-		AESSecret:             []byte("server-secret"),
-		CacheEncryptedPatches: true,
-	}
-	fixture.createPatch(t, 1, time.Now().Add(time.Hour))
-
-	clientID := "device-1"
-	response := fixture.patchCheck(t, &models.PatchCheckRequest{
-		ReleaseVersion: testReleaseVersion,
-		Platform:       testPlatform,
-		Arch:           testArch,
-		AppID:          fixture.appID.String(),
-		Channel:        "stable",
-		ClientID:       &clientID,
-	})
-
-	if !response.PatchAvailable || response.Patch == nil {
-		t.Fatalf("expected patch, got %+v", response)
-	}
-	if response.Patch.Encryption != nil {
-		t.Fatalf("did not expect encryption metadata without opt-in: %+v", response.Patch.Encryption)
-	}
-	if strings.Contains(response.Patch.DownloadURL, "/encrypted/") {
-		t.Fatalf("expected plaintext URL, got %s", response.Patch.DownloadURL)
+	fixture.handler.PatchDelivery = PatchDeliveryConfig{EncryptionMode: PatchDeliveryEncryptionPerDeviceAESGCM, AESSecret: []byte("server-secret")}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/patches/check", strings.NewReader(`{"app_id":"`+fixture.appID.String()+`"}`))
+	response := httptest.NewRecorder()
+	fixture.handler.PatchCheck(response, request)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "encrypted_patch_capability_required") {
+		t.Fatalf("downgrade accepted: %d %s", response.Code, response.Body.String())
 	}
 }
 

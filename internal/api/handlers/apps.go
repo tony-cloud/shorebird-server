@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/shorebird-server/internal/api/middleware"
@@ -393,14 +392,13 @@ func (h *OrganizationHandler) GetOrganizations(w http.ResponseWriter, r *http.Re
 
 	var result []models.OrganizationMembership
 	for _, o := range orgs {
-		now := time.Now().UTC()
 		result = append(result, models.OrganizationMembership{
 			Organization: models.Organization{
 				ID:               o.OrgID,
 				Name:             o.OrgName,
 				OrganizationType: o.OrgType,
-				CreatedAt:        now,
-				UpdatedAt:        now,
+				CreatedAt:        o.CreatedAt.Time,
+				UpdatedAt:        o.CreatedAt.Time,
 			},
 			Role: o.Role,
 		})
@@ -438,7 +436,18 @@ func (h *OrganizationHandler) CreateOrganization(w http.ResponseWriter, r *http.
 		respondError(w, http.StatusInternalServerError, "Failed to add organization owner", nil)
 		return
 	}
-	respondJSON(w, http.StatusCreated, map[string]interface{}{"id": orgID, "name": req.Name, "organization_type": req.Type})
+	orgs, err := h.DB.GetOrganizationsByUserID(r.Context(), claims.UserID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to fetch created organization", nil)
+		return
+	}
+	for _, org := range orgs {
+		if org.OrgID == orgID {
+			respondJSON(w, http.StatusCreated, models.Organization{ID: org.OrgID, Name: org.OrgName, OrganizationType: org.OrgType, CreatedAt: org.CreatedAt.Time, UpdatedAt: org.CreatedAt.Time})
+			return
+		}
+	}
+	respondError(w, http.StatusInternalServerError, "Created organization not found", nil)
 }
 
 func (h *OrganizationHandler) ListOrganizationUsers(w http.ResponseWriter, r *http.Request) {

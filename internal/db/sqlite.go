@@ -133,7 +133,7 @@ func (s *SqliteStore) CreateOrganization(ctx context.Context, name, orgType stri
 }
 func (s *SqliteStore) GetOrganizationsByUserID(ctx context.Context, userID int) ([]OrgMembershipRow, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT o.id, o.name, o.type, om.role FROM organizations o JOIN organization_memberships om ON o.id = om.organization_id WHERE om.user_id = ? ORDER BY o.name`, userID)
+		`SELECT o.id, o.name, o.type, om.role, o.created_at FROM organizations o JOIN organization_memberships om ON o.id = om.organization_id WHERE om.user_id = ? ORDER BY o.name`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -141,7 +141,7 @@ func (s *SqliteStore) GetOrganizationsByUserID(ctx context.Context, userID int) 
 	var result []OrgMembershipRow
 	for rows.Next() {
 		var r OrgMembershipRow
-		if err := rows.Scan(&r.OrgID, &r.OrgName, &r.OrgType, &r.Role); err != nil {
+		if err := rows.Scan(&r.OrgID, &r.OrgName, &r.OrgType, &r.Role, &r.CreatedAt); err != nil {
 			return nil, err
 		}
 		result = append(result, r)
@@ -419,16 +419,32 @@ func (s *SqliteStore) DeleteRelease(ctx context.Context, releaseID int) error {
 }
 
 // --- Release Artifacts ---
-func (s *SqliteStore) CreateReleaseArtifact(ctx context.Context, releaseID int, arch, platform, hash, storageKey string, size int64, canSideload bool, podfileLockHash *string) (*ArtifactRow, error) {
-	r := &ArtifactRow{ReleaseID: releaseID, Arch: arch, Platform: platform, Hash: hash, Size: size, StorageKey: storageKey, CanSideload: canSideload, PodfileLockHash: podfileLockHash}
-	err := s.db.QueryRowContext(ctx, `INSERT INTO release_artifacts (release_id, arch, platform, hash, size, storage_key, can_sideload, podfile_lock_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, created_at`, releaseID, arch, platform, hash, size, storageKey, canSideload, podfileLockHash).Scan(&r.ID, &r.CreatedAt)
+func (s *SqliteStore) CreateReleaseArtifact(ctx context.Context, releaseID int, arch, platform, hash, storageKey string, size int64, canSideload bool, podfileLockHash *string, signing ...*ReleaseSigningPolicy) (*ArtifactRow, error) {
+	mode, keyID := artifactSigningValues(signing)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
-	return r, nil
+	defer tx.Rollback()
+	var conflicting int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM release_artifacts WHERE release_id = ? AND platform = ? AND (COALESCE(signing_mode, '') <> COALESCE(?, '') OR COALESCE(signing_key_id, 0) <> COALESCE(?, 0))`, releaseID, platform, mode, keyID).Scan(&conflicting); err != nil {
+		return nil, err
+	}
+	if conflicting != 0 {
+		return nil, ErrSigningPolicyConflict
+	}
+	row := &ArtifactRow{ReleaseID: releaseID, Arch: arch, Platform: platform, Hash: hash, Size: size, StorageKey: storageKey, CanSideload: canSideload, PodfileLockHash: podfileLockHash, SigningMode: mode, SigningKeyID: keyID}
+	err = tx.QueryRowContext(ctx, `INSERT INTO release_artifacts (release_id, arch, platform, hash, size, storage_key, can_sideload, podfile_lock_hash, signing_mode, signing_key_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, created_at`, releaseID, arch, platform, hash, size, storageKey, canSideload, podfileLockHash, mode, keyID).Scan(&row.ID, &row.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return row, nil
 }
 func (s *SqliteStore) GetReleaseArtifacts(ctx context.Context, releaseID int, arch, platform *string) ([]ArtifactRow, error) {
-	query := `SELECT id, release_id, arch, platform, hash, size, storage_key, can_sideload, podfile_lock_hash, created_at FROM release_artifacts WHERE release_id = ?`
+	query := `SELECT id, release_id, arch, platform, hash, size, storage_key, can_sideload, podfile_lock_hash, created_at, signing_mode, signing_key_id FROM release_artifacts WHERE release_id = ?`
 	args := []interface{}{releaseID}
 	if arch != nil {
 		query += " AND arch = ?"
@@ -447,7 +463,7 @@ func (s *SqliteStore) GetReleaseArtifacts(ctx context.Context, releaseID int, ar
 	var result []ArtifactRow
 	for rows.Next() {
 		var r ArtifactRow
-		if err := rows.Scan(&r.ID, &r.ReleaseID, &r.Arch, &r.Platform, &r.Hash, &r.Size, &r.StorageKey, &r.CanSideload, &r.PodfileLockHash, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.ReleaseID, &r.Arch, &r.Platform, &r.Hash, &r.Size, &r.StorageKey, &r.CanSideload, &r.PodfileLockHash, &r.CreatedAt, &r.SigningMode, &r.SigningKeyID); err != nil {
 			return nil, err
 		}
 		result = append(result, r)
@@ -636,6 +652,7 @@ func (s *SqliteStore) migrate(ctx context.Context) error {
 		CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));
 		CREATE TABLE IF NOT EXISTS account_tokens (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, token_hash TEXT NOT NULL UNIQUE, token_type TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));
 		CREATE TABLE IF NOT EXISTS apps (id TEXT PRIMARY KEY, organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, display_name TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));
+		CREATE TABLE IF NOT EXISTS managed_signing_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, app_id TEXT NOT NULL UNIQUE REFERENCES apps(id) ON DELETE CASCADE, public_key_pem TEXT NOT NULL, wrapped_private_key TEXT NOT NULL);
 		CREATE TABLE IF NOT EXISTS channels (id INTEGER PRIMARY KEY AUTOINCREMENT, app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE, name TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), UNIQUE(app_id, name));
 		CREATE TABLE IF NOT EXISTS releases (id INTEGER PRIMARY KEY AUTOINCREMENT, app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE, version TEXT NOT NULL, flutter_revision TEXT NOT NULL, flutter_version TEXT, display_name TEXT, notes TEXT, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));
 		CREATE TABLE IF NOT EXISTS release_platform_statuses (id INTEGER PRIMARY KEY AUTOINCREMENT, release_id INTEGER NOT NULL REFERENCES releases(id) ON DELETE CASCADE, platform TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'draft', metadata TEXT DEFAULT '{}', created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), UNIQUE(release_id, platform));
@@ -667,6 +684,8 @@ func (s *SqliteStore) migrate(ctx context.Context) error {
 		`ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE users ADD COLUMN auth_provider TEXT NOT NULL DEFAULT 'password'`,
 		`ALTER TABLE patch_artifacts ADD COLUMN offline_expires_at TEXT`,
+		`ALTER TABLE release_artifacts ADD COLUMN signing_mode TEXT`,
+		`ALTER TABLE release_artifacts ADD COLUMN signing_key_id INTEGER REFERENCES managed_signing_keys(id)`,
 	}
 	for _, stmt := range alter {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
@@ -703,4 +722,22 @@ func (s *SqliteStore) GetPatchArtifacts(ctx context.Context, patchID int) ([]Pat
 		result = append(result, row)
 	}
 	return result, rows.Err()
+}
+
+func (s *SqliteStore) GetAppSigningKey(ctx context.Context, appID uuid.UUID) (*SigningKeyRow, error) {
+	row := &SigningKeyRow{}
+	err := s.db.QueryRowContext(ctx, `SELECT id, app_id, public_key_pem, wrapped_private_key FROM managed_signing_keys WHERE app_id = ?`, appID).Scan(&row.ID, &row.AppID, &row.PublicKeyPEM, &row.WrappedPrivateKey)
+	return row, err
+}
+func (s *SqliteStore) GetSigningKeyByID(ctx context.Context, keyID int) (*SigningKeyRow, error) {
+	row := &SigningKeyRow{}
+	err := s.db.QueryRowContext(ctx, `SELECT id, app_id, public_key_pem, wrapped_private_key FROM managed_signing_keys WHERE id = ?`, keyID).Scan(&row.ID, &row.AppID, &row.PublicKeyPEM, &row.WrappedPrivateKey)
+	return row, err
+}
+func (s *SqliteStore) CreateAppSigningKey(ctx context.Context, appID uuid.UUID, publicKeyPEM, wrappedPrivateKey string) (*SigningKeyRow, error) {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO managed_signing_keys (app_id, public_key_pem, wrapped_private_key) VALUES (?, ?, ?) ON CONFLICT(app_id) DO NOTHING`, appID, publicKeyPEM, wrappedPrivateKey)
+	if err != nil {
+		return nil, err
+	}
+	return s.GetAppSigningKey(ctx, appID)
 }

@@ -17,6 +17,7 @@ type DeviceHandler struct {
 	DB            db.Store
 	Storage       storage.Store
 	PatchDelivery PatchDeliveryConfig
+	Signing       *SigningHandler
 }
 
 // PatchCheck handles POST /api/v1/patches/check
@@ -26,6 +27,18 @@ func (h *DeviceHandler) PatchCheck(w http.ResponseWriter, r *http.Request) {
 	var req models.PatchCheckRequest
 	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "Invalid request body", nil)
+		return
+	}
+
+	if req.Nonce != "" {
+		nonce, err := uuid.Parse(req.Nonce)
+		if err != nil || nonce.Version() != 4 {
+			respondError(w, http.StatusBadRequest, "nonce must be a UUIDv4", nil)
+			return
+		}
+	}
+
+	if !h.validatePatchDeliveryRequest(w, req) {
 		return
 	}
 
@@ -58,7 +71,8 @@ func (h *DeviceHandler) PatchCheck(w http.ResponseWriter, r *http.Request) {
 	// Get rolled back patches
 	rolledBack, err := h.DB.GetRolledBackPatchNumbers(r.Context(), release.ID)
 	if err != nil {
-		rolledBack = []int{}
+		respondError(w, http.StatusInternalServerError, "Failed to fetch rollback state", nil)
+		return
 	}
 	currentPatchNumber := requestPatchNumber(req)
 	potentialRemoval := h.expiredInstalledPatchRemoval(r, release.ID, currentPatchNumber, req.Arch, req.Platform, time.Now().UTC())
@@ -72,7 +86,7 @@ func (h *DeviceHandler) PatchCheck(w http.ResponseWriter, r *http.Request) {
 	channel, err := h.DB.GetChannelByAppIDAndName(r.Context(), appID, channelName)
 	if err != nil {
 		// Channel not found, no patch available
-		respondNoPatch(w, rolledBack, potentialRemoval)
+		h.respondNoPatch(w, r, req, release.ID, rolledBack, potentialRemoval)
 		return
 	}
 
@@ -80,23 +94,23 @@ func (h *DeviceHandler) PatchCheck(w http.ResponseWriter, r *http.Request) {
 	patch, err := h.DB.GetLatestPromotedPatch(r.Context(), release.ID, channel.ID, req.Arch, req.Platform)
 	if err != nil {
 		// No patch available
-		respondNoPatch(w, rolledBack, potentialRemoval)
+		h.respondNoPatch(w, r, req, release.ID, rolledBack, potentialRemoval)
 		return
 	}
 	if patchExpired(patch, time.Now().UTC()) {
-		respondNoPatch(w, rolledBack, potentialRemoval)
+		h.respondNoPatch(w, r, req, release.ID, rolledBack, potentialRemoval)
 		return
 	}
 
 	// If the device already has this or a newer patch, no update needed
 	if req.CurrentPatchNumber != nil && *req.CurrentPatchNumber >= patch.Number {
-		respondNoPatch(w, rolledBack, potentialRemoval)
+		h.respondNoPatch(w, r, req, release.ID, rolledBack, potentialRemoval)
 		return
 	}
 
 	// Also check legacy patch_number field
 	if req.PatchNumber != nil && *req.PatchNumber >= patch.Number {
-		respondNoPatch(w, rolledBack, potentialRemoval)
+		h.respondNoPatch(w, r, req, release.ID, rolledBack, potentialRemoval)
 		return
 	}
 
@@ -107,7 +121,7 @@ func (h *DeviceHandler) PatchCheck(w http.ResponseWriter, r *http.Request) {
 			isTargeted, err := h.DB.IsPatchTargetedToDevice(r.Context(), patch.ID, *req.ClientID)
 			if err != nil || !isTargeted {
 				// Patch is restricted but this device is not in the allowlist
-				respondNoPatch(w, rolledBack, potentialRemoval)
+				h.respondNoPatch(w, r, req, release.ID, rolledBack, potentialRemoval)
 				return
 			}
 		}
@@ -119,7 +133,7 @@ func (h *DeviceHandler) PatchCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondJSON(w, http.StatusOK, models.PatchCheckResponse{
+	h.respondPatchCheck(w, r, req, release.ID, models.PatchCheckResponse{
 		PatchAvailable: true,
 		Patch: &models.PatchCheckMetadata{
 			Number:           patch.Number,
@@ -133,14 +147,14 @@ func (h *DeviceHandler) PatchCheck(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func respondNoPatch(w http.ResponseWriter, rolledBack []int, removal *models.PatchRemoval) {
+func (h *DeviceHandler) respondNoPatch(w http.ResponseWriter, r *http.Request, req models.PatchCheckRequest, releaseID int, rolledBack []int, removal *models.PatchRemoval) {
 	if rolledBack == nil {
 		rolledBack = []int{}
 	}
 	if removal != nil {
 		rolledBack = appendPatchNumberOnce(rolledBack, removal.Number)
 	}
-	respondJSON(w, http.StatusOK, models.PatchCheckResponse{
+	h.respondPatchCheck(w, r, req, releaseID, models.PatchCheckResponse{
 		PatchAvailable:         false,
 		RolledBackPatchNumbers: rolledBack,
 		RemovePatch:            removal,

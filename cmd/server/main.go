@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/shorebird-server/internal/api/handlers"
+	"github.com/shorebird-server/internal/artifactgateway"
 	"github.com/shorebird-server/internal/auth"
 	"github.com/shorebird-server/internal/config"
 	"github.com/shorebird-server/internal/db"
@@ -21,6 +23,15 @@ import (
 func main() {
 	cfg := config.Load()
 	ctx := context.Background()
+
+	var signingMasterKey []byte
+	if cfg.Signing.MasterKey != "" {
+		var err error
+		signingMasterKey, err = base64.StdEncoding.DecodeString(cfg.Signing.MasterKey)
+		if err != nil || len(signingMasterKey) != 32 {
+			log.Fatal("PATCH_SIGNING_MASTER_KEY must be base64-encoded 32 random bytes")
+		}
+	}
 
 	// --- Database ---
 	var dsn string
@@ -82,13 +93,18 @@ func main() {
 		EncryptionMode:        cfg.PatchDelivery.EncryptionMode,
 		AESSecret:             []byte(cfg.PatchDelivery.AESSecret),
 		CacheEncryptedPatches: cfg.PatchDelivery.CacheEncryptedPatches,
-	})
+	}, handlers.SigningConfig{MasterKey: signingMasterKey})
+
+	handler, err := artifactgateway.Wrap(router, os.Getenv("SHOREBIRD_ARTIFACTS_DIR"), os.Getenv("ARTIFACT_PROXY_UPSTREAM"))
+	if err != nil {
+		log.Fatalf("Failed to configure artifact routes: %v", err)
+	}
 
 	// --- HTTP Server ---
 	addr := fmt.Sprintf("%s:%s", cfg.Server.Host, cfg.Server.Port)
 	srv := &http.Server{
 		Addr:         addr,
-		Handler:      router,
+		Handler:      handler,
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		IdleTimeout:  60 * time.Second,

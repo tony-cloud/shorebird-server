@@ -59,27 +59,97 @@ All settings via environment variables. See `.env.example` for the full list.
 | `JWT_SECRET` | *(insecure default)* | Set in production! |
 | `SERVER_PORT` | `8080` | HTTP port |
 | `SERVER_BASE_URL` | `http://localhost:8080` | Public URL for download links |
+| `SHOREBIRD_ARTIFACTS_DIR` | *(empty)* | Optional extracted public artifact mirror root containing `shorebird/` |
+| `ARTIFACT_PROXY_UPSTREAM` | *(empty)* | Optional HTTP(S) artifact_proxy origin, e.g. `http://127.0.0.1:8082` |
 | `SMTP_HOST` | *(empty)* | SMTP host for verification/reset emails; empty logs links |
 | `SMTP_PORT` | `587` | SMTP port |
 | `SMTP_FROM` | `shorebird@localhost` | From address for account emails |
-| `PATCH_DELIVERY_ENCRYPTION` | `off` | Set to `per_device_aes_gcm` to enable opt-in encrypted patch delivery |
+| `PATCH_DELIVERY_ENCRYPTION` | `off` | Set to `per_device_aes_gcm` to require encrypted-delivery capability and client identity |
+| `PATCH_SIGNING_MASTER_KEY` | *(empty)* | Base64-encoded 32-byte independent key wrapping managed RSA private keys |
 | `PATCH_DELIVERY_AES_SECRET` | *(empty)* | Server secret used to derive per-device AES-GCM keys |
 | `PATCH_DELIVERY_CACHE_ENCRYPTED` | `true` | Cache per-device encrypted patch artifacts |
 
-### Optional encrypted patch delivery
+### Serve the CLI's default toolchain URLs
 
-Encrypted delivery is disabled by default so the server remains compatible
-with the public Shorebird updater, which expects plaintext patch bytes. When
-`PATCH_DELIVERY_ENCRYPTION=per_device_aes_gcm` is set, devices that send
-`accept_encrypted_patch=true` and a `client_id` to `/api/v1/patches/check`
-receive a cached AES-GCM ciphertext URL plus encryption metadata.
+The API defaults to port 8080. Set `SHOREBIRD_ARTIFACTS_DIR` to an extracted
+public mirror directory containing `shorebird/` to serve its files under
+`/artifacts/shorebird/...`. This route supports read-only GET/HEAD and byte ranges;
+it rejects directory listings, symlinks, and writes. Use a dedicated public
+mirror directory rather than the server's private database or object storage.
 
-The generated updater `client_id` is a random UUID persisted on first startup.
-Apps using the cloned `shorebird_code_push` package can call
-`ShorebirdUpdater().setDeviceIdOverride(...)` before checking for updates to
-bind delivery to their own stable app/account device id. This id is not a
-secret; the server derives encryption keys from `PATCH_DELIVERY_AES_SECRET`
-and the app/device/patch context.
+Run the workspace's existing Dart `artifact_proxy` separately on `PORT=8082`
+and set `ARTIFACT_PROXY_UPSTREAM=http://127.0.0.1:8082` on the Go API server.
+Requests under `/download.flutter.io/...` then forward to the corresponding
+path on that proxy, letting the CLI's default API-origin SDK/engine URLs work.
+These routes are independently optional; empty settings disable them. Invalid
+mirror or proxy configuration prevents startup. The proxy still needs the
+matching published custom SDK and engine artifacts for each supported target.
+
+### Managed patch signing
+
+The CLI's default signing mode requires a separately provisioned wrapping key:
+
+```bash
+export PATCH_SIGNING_MASTER_KEY="$(openssl rand -base64 32)"
+```
+
+Generate this key once, store it as a deployment secret, and preserve it with the
+database backup. It is independent of `JWT_SECRET` and `PATCH_DELIVERY_AES_SECRET`.
+An absent key returns HTTP 503 for managed-signing operations; a malformed value
+prevents startup. Replacing it does not rotate existing signing keys: existing
+wrapped keys become unusable without their original wrapping key. Automatic key
+rotation and a rotation API are not implemented.
+
+An organization admin can fetch `/api/v1/apps/{appId}/signing-key`. The server
+creates one persistent RSA-2048 key per app and returns only its numeric id and
+SubjectPublicKeyInfo public PEM. Private PKCS8 bytes are stored encrypted with
+AES-256-GCM, a random nonce, and app-bound authenticated data.
+
+Release artifact registration accepts a multipart `signing` JSON field:
+`{"mode":"managed","key_id":123}`, `{"mode":"customer"}`, or
+`{"mode":"unsigned"}`. The policy is immutable across a release platform's primary artifacts and
+supplements and is returned on artifact listing. Managed patch uploads inherit
+the pinned release key and receive a server-generated RSA PKCS1v15 SHA-256
+signature over the lowercase UTF-8 final artifact hash string, matching the CLI
+and updater. The hash describes the reconstructed installed artifact, rather
+than its uploaded diff transport. Customers continue to supply their own
+signatures for customer-signed releases. Existing releases with no signing
+metadata keep their legacy behavior.
+
+Nonce-aware patch checks for managed releases also return
+`authentication:{payload,signature}`. The standard-base64 payload is JSON with
+`version:1`, the literal request app/release/platform/architecture/channel/nonce,
+patch availability and offer fields, and rollback numbers. Its RSA signature
+covers the raw payload bytes. Rollback-only and no-update responses are signed
+as well. Clients must verify this against the embedded public key before using
+control metadata; requests without a nonce retain the legacy unsigned response.
+The updated native updater can require this with
+`patch_response_verification: required`. Customer-signed and legacy releases do
+not have a server-held key for authenticating these responses.
+
+SQLite adds the signing tables and columns on startup. PostgreSQL deployments
+must apply `internal/db/migrations/003_managed_signing.sql` with the existing
+Goose migration workflow before using this server version.
+
+### Required encrypted patch delivery
+
+Delivery encryption defaults to `off`. Setting
+`PATCH_DELIVERY_ENCRYPTION=per_device_aes_gcm` requires every patch-check request
+to include `accept_encrypted_patch:true` and a nonempty `client_id`. Missing
+capability or identity returns HTTP 400 with the respective code
+`encrypted_patch_capability_required` or `encrypted_patch_client_id_required`;
+it never selects a plaintext fallback. Missing server secrets or an unknown
+encryption mode fail closed. Capable clients receive an AES-GCM ciphertext URL
+and encryption metadata derived from the server secret and app/device/patch
+context.
+
+Secure client key provisioning and a compatible decrypting installation path
+must be supplied separately. This server does not provide a key provisioning
+endpoint; a generated or overridden device id is not a decryption secret.
+The stock updater cannot use this delivery format. Protect the storage origin
+as well: original patch objects remain in storage, and the default local
+storage route and public S3 patch bucket expose those objects. This capability
+gate alone does not establish end-to-end artifact confidentiality.
 
 ### Account Security and SSO
 
@@ -148,6 +218,8 @@ base_url: http://your-server.com:8080
 | PATCH | `/api/v1/users/me/password` | Change current user's password |
 | POST | `/api/v1/users` | Create user |
 | GET | `/api/v1/apps` | List apps |
+| GET | `/api/v1/apps/{appId}` | Fetch one visible app |
+| GET | `/api/v1/apps/{appId}/signing-key` | Get/create managed public key (organization admin) |
 | POST | `/api/v1/apps` | Create app |
 | DELETE | `/api/v1/apps/{appId}` | Delete app |
 | PATCH | `/api/v1/apps/{appId}/transfer` | Transfer app ownership to another organization |

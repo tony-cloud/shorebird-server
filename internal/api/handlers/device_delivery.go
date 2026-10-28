@@ -11,6 +11,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/shorebird-server/internal/db"
@@ -34,7 +36,35 @@ type encryptedPatchDelivery struct {
 	encryption  *models.PatchEncryptionMetadata
 }
 
+// Required encryption is a capability gate, not a client-selectable downgrade.
+func (h *DeviceHandler) validatePatchDeliveryRequest(w http.ResponseWriter, req models.PatchCheckRequest) bool {
+	switch h.PatchDelivery.EncryptionMode {
+	case "", PatchDeliveryEncryptionOff:
+		return true
+	case PatchDeliveryEncryptionPerDeviceAESGCM:
+		if !req.AcceptEncryptedPatch {
+			respondCodedError(w, http.StatusBadRequest, "encrypted_patch_capability_required", "This server requires accept_encrypted_patch=true; clients must provision a compatible decryption key before opting in")
+			return false
+		}
+		if req.ClientID == nil || strings.TrimSpace(*req.ClientID) == "" {
+			respondCodedError(w, http.StatusBadRequest, "encrypted_patch_client_id_required", "Encrypted patch delivery requires a nonempty client_id")
+			return false
+		}
+		if len(h.PatchDelivery.AESSecret) == 0 {
+			respondCodedError(w, http.StatusServiceUnavailable, "encrypted_patch_delivery_unavailable", "PATCH_DELIVERY_AES_SECRET is required for encrypted delivery")
+			return false
+		}
+		return true
+	default:
+		respondCodedError(w, http.StatusServiceUnavailable, "encrypted_patch_delivery_unavailable", "Unknown patch delivery encryption mode")
+		return false
+	}
+}
+
 func (h *DeviceHandler) maybeEncryptedPatchDelivery(ctx context.Context, appID uuid.UUID, releaseID int, req models.PatchCheckRequest, patch *db.PatchWithArtifactRow) (*encryptedPatchDelivery, error) {
+	if h.PatchDelivery.EncryptionMode != "" && h.PatchDelivery.EncryptionMode != PatchDeliveryEncryptionOff && !h.shouldEncryptPatchDelivery(req) {
+		return nil, fmt.Errorf("required patch encryption capability is missing")
+	}
 	if !h.shouldEncryptPatchDelivery(req) {
 		downloadURL, err := h.Storage.GeneratePublicDownloadURL(ctx, patch.StorageKey)
 		if err != nil {

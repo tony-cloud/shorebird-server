@@ -20,7 +20,7 @@ import (
 var openAPISpec []byte
 
 // NewRouter creates the HTTP router with all API routes.
-func NewRouter(authService *authpkg.Service, database db.Store, store storage.Store, mailer *email.Mailer, baseURL string, patchDelivery PatchDeliveryConfig) *chi.Mux {
+func NewRouter(authService *authpkg.Service, database db.Store, store storage.Store, mailer *email.Mailer, baseURL string, patchDelivery PatchDeliveryConfig, signingConfig ...SigningConfig) *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(chimw.Logger)
 	r.Use(chimw.Recoverer)
@@ -36,15 +36,19 @@ func NewRouter(authService *authpkg.Service, database db.Store, store storage.St
 	}))
 
 	// Initialize handlers
+	signingHandler := &SigningHandler{DB: database}
+	if len(signingConfig) > 0 {
+		signingHandler.MasterKey = append([]byte(nil), signingConfig[0].MasterKey...)
+	}
 	authHandler := &AuthHandler{DB: database, AuthService: authService, Mailer: mailer, BaseURL: baseURL}
 	userHandler := &UserHandler{DB: database, BaseURL: baseURL}
 	appHandler := &AppHandler{DB: database}
 	channelHandler := &ChannelHandler{DB: database}
 	orgHandler := &OrganizationHandler{DB: database}
-	releaseHandler := &ReleaseHandler{DB: database, Storage: store, BaseURL: baseURL}
-	patchHandler := &PatchHandler{DB: database, Storage: store}
+	releaseHandler := &ReleaseHandler{DB: database, Storage: store, BaseURL: baseURL, Signing: signingHandler}
+	patchHandler := &PatchHandler{DB: database, Storage: store, Signing: signingHandler}
 	metricsHandler := &MetricsHandler{DB: database}
-	deviceHandler := &DeviceHandler{DB: database, Storage: store, PatchDelivery: patchDelivery}
+	deviceHandler := &DeviceHandler{DB: database, Storage: store, PatchDelivery: patchDelivery, Signing: signingHandler}
 	diagHandler := &DiagnosticsHandler{}
 	adminHandler := &AdminHandler{DB: database}
 	storageHandler := NewStorageHandler(store)
@@ -102,6 +106,7 @@ func NewRouter(authService *authpkg.Service, database db.Store, store storage.St
 			// Apps
 			r.Get("/apps", appHandler.GetApps)
 			r.Get("/apps/{appId}", appHandler.GetApp)
+			r.Get("/apps/{appId}/signing-key", signingHandler.GetSigningKey)
 			r.Post("/apps", appHandler.CreateApp)
 			r.Delete("/apps/{appId}", appHandler.DeleteApp)
 			r.Patch("/apps/{appId}/transfer", appHandler.TransferApp)

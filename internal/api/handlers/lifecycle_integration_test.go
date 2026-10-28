@@ -20,7 +20,9 @@ import (
 )
 
 type apiFixture struct {
-	db                      *db.SqliteStore
+	dbPath                  string
+	objects                 storage.Store
+	db                      db.Store
 	server                  *httptest.Server
 	auth                    *auth.Service
 	app                     *db.AppRow
@@ -32,13 +34,19 @@ type apiFixture struct {
 
 func newAPIFixture(t *testing.T) *apiFixture {
 	t.Helper()
-	store, err := db.NewSqliteStore(t.TempDir() + "/server.db")
+	databasePath := t.TempDir() + "/server.db"
+	store, err := db.NewSqliteStore(databasePath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
+	return newAPIFixtureForStore(t, store, databasePath)
+}
+
+func newAPIFixtureForStore(t *testing.T, store db.Store, databasePath string) *apiFixture {
+	t.Helper()
 	service := auth.NewService("integration-secret", time.Hour)
-	f := &apiFixture{db: store, auth: service}
+	f := &apiFixture{db: store, dbPath: databasePath, auth: service}
 	ctx := context.Background()
 	hash, err := auth.HashPassword("test-password")
 	if err != nil {
@@ -87,10 +95,11 @@ func newAPIFixture(t *testing.T) *apiFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	objects, err := storage.NewLocalStore(t.TempDir(), "http://updates.test", "")
+	objects, err := storage.NewLocalStore(t.TempDir(), "http://updates.test", "integration-upload-secret")
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.objects = objects
 	f.server = httptest.NewServer(NewRouter(service, store, objects, nil, "", PatchDeliveryConfig{}))
 	t.Cleanup(f.server.Close)
 	return f

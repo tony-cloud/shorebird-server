@@ -27,3 +27,8 @@ func decodeJSON(r *http.Request, v interface{}) error {
 	defer r.Body.Close()
 	return json.NewDecoder(r.Body).Decode(v)
 }
+
+// respondCodedError gives clients a stable machine-readable capability error.
+func respondCodedError(w http.ResponseWriter, status int, code, message string) {
+	respondJSON(w, status, map[string]interface{}{"code": code, "message": message, "details": nil})
+}

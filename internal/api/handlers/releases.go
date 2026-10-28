@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -29,6 +31,7 @@ type ReleaseHandler struct {
 	DB      db.Store
 	Storage storage.Store
 	BaseURL string
+	Signing *SigningHandler
 }
 
 // GetReleases handles GET /api/v1/apps/{appId}/releases
@@ -52,9 +55,10 @@ func (h *ReleaseHandler) GetReleases(w http.ResponseWriter, r *http.Request) {
 
 	var result []models.Release
 	for _, rel := range releases {
-		statuses, _ := h.DB.GetReleasePlatformStatuses(r.Context(), rel.ID)
-		if statuses == nil {
-			statuses = map[string]string{}
+		statuses, platforms, err := h.releasePlatformDetails(r.Context(), rel.ID)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "Failed to fetch release platform details", nil)
+			return
 		}
 
 		result = append(result, models.Release{
@@ -66,6 +70,7 @@ func (h *ReleaseHandler) GetReleases(w http.ResponseWriter, r *http.Request) {
 			DisplayName:      rel.DisplayName,
 			Notes:            rel.Notes,
 			PlatformStatuses: statuses,
+			Platforms:        platforms,
 			CreatedAt:        rel.CreatedAt.Time,
 			UpdatedAt:        rel.UpdatedAt.Time,
 		})
@@ -110,6 +115,7 @@ func (h *ReleaseHandler) CreateRelease(w http.ResponseWriter, r *http.Request) {
 			DisplayName:      release.DisplayName,
 			Notes:            release.Notes,
 			PlatformStatuses: map[string]string{},
+			Platforms:        map[string]models.ReleasePlatformDetails{},
 			CreatedAt:        release.CreatedAt.Time,
 			UpdatedAt:        release.UpdatedAt.Time,
 		},
@@ -207,6 +213,11 @@ func (h *ReleaseHandler) CreateReleaseArtifact(w http.ResponseWriter, r *http.Re
 	filename := r.FormValue("filename")
 	podfileLockHash := r.FormValue("podfile_lock_hash")
 
+	signing, ok := h.Signing.parseReleaseSigning(w, r, parsedAppID)
+	if !ok {
+		return
+	}
+
 	size, _ := strconv.ParseInt(sizeStr, 10, 64)
 	canSideload := canSideloadStr == "true"
 
@@ -233,8 +244,12 @@ func (h *ReleaseHandler) CreateReleaseArtifact(w http.ResponseWriter, r *http.Re
 		phl = &podfileLockHash
 	}
 
-	artifact, err := h.DB.CreateReleaseArtifact(r.Context(), releaseID, arch, platform, hash, storageKey, size, canSideload, phl)
+	artifact, err := h.DB.CreateReleaseArtifact(r.Context(), releaseID, arch, platform, hash, storageKey, size, canSideload, phl, signing)
 	if err != nil {
+		if errors.Is(err, db.ErrSigningPolicyConflict) {
+			respondError(w, http.StatusConflict, "Release signing policy is immutable", nil)
+			return
+		}
 		respondError(w, http.StatusInternalServerError, "Failed to create artifact record", strPtr(err.Error()))
 		return
 	}
@@ -288,6 +303,11 @@ func (h *ReleaseHandler) GetReleaseArtifacts(w http.ResponseWriter, r *http.Requ
 
 	var result []models.ReleaseArtifact
 	for _, a := range artifacts {
+		signing, err := h.Signing.artifactSigning(r.Context(), appID, a)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "Failed to load release signing policy", nil)
+			return
+		}
 		// Build a download URL for the artifact
 		downloadURL := fmt.Sprintf("%s/storage/dl/releases/%s", strings.TrimRight(h.BaseURL, "/"), a.StorageKey)
 		result = append(result, models.ReleaseArtifact{
@@ -301,6 +321,7 @@ func (h *ReleaseHandler) GetReleaseArtifacts(w http.ResponseWriter, r *http.Requ
 			CanSideload:     a.CanSideload,
 			PodfileLockHash: a.PodfileLockHash,
 			CreatedAt:       a.CreatedAt.Time,
+			Signing:         signing,
 		})
 	}
 
@@ -318,4 +339,38 @@ func (h *ReleaseHandler) releaseBelongsToApp(w http.ResponseWriter, r *http.Requ
 		return false
 	}
 	return true
+}
+
+func (h *ReleaseHandler) releasePlatformDetails(ctx context.Context, releaseID int) (map[string]string, map[string]models.ReleasePlatformDetails, error) {
+	statuses, err := h.DB.GetReleasePlatformStatuses(ctx, releaseID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if statuses == nil {
+		statuses = map[string]string{}
+	}
+	platforms := map[string]models.ReleasePlatformDetails{}
+	for platform, status := range statuses {
+		platforms[platform] = models.ReleasePlatformDetails{Status: status}
+	}
+	artifacts, err := h.DB.GetReleaseArtifacts(ctx, releaseID, nil, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	policies := map[string]db.ArtifactRow{}
+	for _, artifact := range artifacts {
+		if previous, ok := policies[artifact.Platform]; ok && !sameSigningPolicy(previous, artifact) {
+			return nil, nil, db.ErrSigningPolicyConflict
+		}
+		policies[artifact.Platform] = artifact
+	}
+	for platform, policy := range policies {
+		details, ok := platforms[platform]
+		if !ok {
+			details.Status = models.ReleaseStatusDraft
+		}
+		details.SigningMode = policy.SigningMode
+		platforms[platform] = details
+	}
+	return statuses, platforms, nil
 }

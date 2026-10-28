@@ -156,7 +156,7 @@ func (db *PgStore) CreateOrganization(ctx context.Context, name, orgType string)
 // GetOrganizationsByUserID returns all organizations a user belongs to.
 func (db *PgStore) GetOrganizationsByUserID(ctx context.Context, userID int) ([]OrgMembershipRow, error) {
 	rows, err := db.query(ctx,
-		`SELECT o.id, o.name, o.type, om.role
+		`SELECT o.id, o.name, o.type, om.role, o.created_at
 		 FROM organizations o
 		 JOIN organization_memberships om ON o.id = om.organization_id
 		 WHERE om.user_id = $1
@@ -169,7 +169,7 @@ func (db *PgStore) GetOrganizationsByUserID(ctx context.Context, userID int) ([]
 	var result []OrgMembershipRow
 	for rows.Next() {
 		var r OrgMembershipRow
-		if err := rows.Scan(&r.OrgID, &r.OrgName, &r.OrgType, &r.Role); err != nil {
+		if err := rows.Scan(&r.OrgID, &r.OrgName, &r.OrgType, &r.Role, &r.CreatedAt); err != nil {
 			return nil, err
 		}
 		result = append(result, r)
@@ -463,15 +463,31 @@ func (db *PgStore) DeleteRelease(ctx context.Context, releaseID int) error {
 // --- Release artifact queries ---
 
 // CreateReleaseArtifact creates a release artifact record.
-func (db *PgStore) CreateReleaseArtifact(ctx context.Context, releaseID int, arch, platform, hash, storageKey string, size int64, canSideload bool, podfileLockHash *string) (*ArtifactRow, error) {
-	row := &ArtifactRow{}
-	err := db.queryRow(ctx,
-		`INSERT INTO release_artifacts (release_id, arch, platform, hash, size, storage_key, can_sideload, podfile_lock_hash)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		 RETURNING id, release_id, arch, platform, hash, size, storage_key, can_sideload, podfile_lock_hash, created_at`,
-		releaseID, arch, platform, hash, size, storageKey, canSideload, podfileLockHash,
-	).Scan(&row.ID, &row.ReleaseID, &row.Arch, &row.Platform, &row.Hash, &row.Size, &row.StorageKey, &row.CanSideload, &row.PodfileLockHash, &row.CreatedAt)
+func (db *PgStore) CreateReleaseArtifact(ctx context.Context, releaseID int, arch, platform, hash, storageKey string, size int64, canSideload bool, podfileLockHash *string, signing ...*ReleaseSigningPolicy) (*ArtifactRow, error) {
+	mode, keyID := artifactSigningValues(signing)
+	tx, err := db.pool.Begin(ctx)
 	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	// Serialize registration per release so concurrent uploads cannot replace a trust anchor.
+	var lockedID int
+	if err := tx.QueryRow(ctx, `SELECT id FROM releases WHERE id = $1 FOR UPDATE`, releaseID).Scan(&lockedID); err != nil {
+		return nil, err
+	}
+	var conflicting int
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM release_artifacts WHERE release_id = $1 AND platform = $2 AND (COALESCE(signing_mode, '') <> COALESCE($3, '') OR COALESCE(signing_key_id, 0) <> COALESCE($4, 0))`, releaseID, platform, mode, keyID).Scan(&conflicting); err != nil {
+		return nil, err
+	}
+	if conflicting != 0 {
+		return nil, ErrSigningPolicyConflict
+	}
+	row := &ArtifactRow{ReleaseID: releaseID, Arch: arch, Platform: platform, Hash: hash, Size: size, StorageKey: storageKey, CanSideload: canSideload, PodfileLockHash: podfileLockHash, SigningMode: mode, SigningKeyID: keyID}
+	err = tx.QueryRow(ctx, `INSERT INTO release_artifacts (release_id, arch, platform, hash, size, storage_key, can_sideload, podfile_lock_hash, signing_mode, signing_key_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id, created_at`, releaseID, arch, platform, hash, size, storageKey, canSideload, podfileLockHash, mode, keyID).Scan(&row.ID, &row.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return row, nil
@@ -479,7 +495,7 @@ func (db *PgStore) CreateReleaseArtifact(ctx context.Context, releaseID int, arc
 
 // GetReleaseArtifacts returns artifacts for a release, optionally filtered.
 func (db *PgStore) GetReleaseArtifacts(ctx context.Context, releaseID int, arch, platform *string) ([]ArtifactRow, error) {
-	query := `SELECT id, release_id, arch, platform, hash, size, storage_key, can_sideload, podfile_lock_hash, created_at
+	query := `SELECT id, release_id, arch, platform, hash, size, storage_key, can_sideload, podfile_lock_hash, created_at, signing_mode, signing_key_id
 		 FROM release_artifacts WHERE release_id = $1`
 	args := []interface{}{releaseID}
 
@@ -503,7 +519,7 @@ func (db *PgStore) GetReleaseArtifacts(ctx context.Context, releaseID int, arch,
 	var result []ArtifactRow
 	for rows.Next() {
 		var r ArtifactRow
-		if err := rows.Scan(&r.ID, &r.ReleaseID, &r.Arch, &r.Platform, &r.Hash, &r.Size, &r.StorageKey, &r.CanSideload, &r.PodfileLockHash, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.ReleaseID, &r.Arch, &r.Platform, &r.Hash, &r.Size, &r.StorageKey, &r.CanSideload, &r.PodfileLockHash, &r.CreatedAt, &r.SigningMode, &r.SigningKeyID); err != nil {
 			return nil, err
 		}
 		result = append(result, r)
@@ -888,4 +904,22 @@ func (db *PgStore) GetPatchArtifacts(ctx context.Context, patchID int) ([]PatchA
 		result = append(result, row)
 	}
 	return result, rows.Err()
+}
+
+func (db *PgStore) GetAppSigningKey(ctx context.Context, appID uuid.UUID) (*SigningKeyRow, error) {
+	row := &SigningKeyRow{}
+	err := db.queryRow(ctx, `SELECT id, app_id, public_key_pem, wrapped_private_key FROM managed_signing_keys WHERE app_id = $1`, appID).Scan(&row.ID, &row.AppID, &row.PublicKeyPEM, &row.WrappedPrivateKey)
+	return row, err
+}
+func (db *PgStore) GetSigningKeyByID(ctx context.Context, keyID int) (*SigningKeyRow, error) {
+	row := &SigningKeyRow{}
+	err := db.queryRow(ctx, `SELECT id, app_id, public_key_pem, wrapped_private_key FROM managed_signing_keys WHERE id = $1`, keyID).Scan(&row.ID, &row.AppID, &row.PublicKeyPEM, &row.WrappedPrivateKey)
+	return row, err
+}
+func (db *PgStore) CreateAppSigningKey(ctx context.Context, appID uuid.UUID, publicKeyPEM, wrappedPrivateKey string) (*SigningKeyRow, error) {
+	_, err := db.exec(ctx, `INSERT INTO managed_signing_keys (app_id, public_key_pem, wrapped_private_key) VALUES ($1,$2,$3) ON CONFLICT(app_id) DO NOTHING`, appID, publicKeyPEM, wrappedPrivateKey)
+	if err != nil {
+		return nil, err
+	}
+	return db.GetAppSigningKey(ctx, appID)
 }
