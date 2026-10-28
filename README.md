@@ -333,4 +333,4 @@ See `.env.example` for all available configuration options.
 
 ## License
 
-MIT / Apache 2.0 (matching Shorebird's licensing)
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE), at your option (matching Shorebird's licensing).
