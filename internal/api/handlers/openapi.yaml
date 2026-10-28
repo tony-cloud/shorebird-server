@@ -96,7 +96,18 @@ paths:
   /auth/refresh:
     post:
       operationId: refreshAuthToken
+      security: []
       tags: [auth]
+      description: Accepts a rotating opaque refresh credential, or a legacy Authorization bearer access token.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token:
+                  type: string
       responses:
         '200':
           description: Refreshed JWT.
@@ -230,6 +241,18 @@ paths:
               schema:
                 $ref: '#/components/schemas/App'
   /api/v1/apps/{appId}:
+    get:
+      operationId: getApp
+      tags: [apps]
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+      responses:
+        '200':
+          description: AppMetadata visible to the current user.
+        '403':
+          description: User is outside the app organization.
+        '404':
+          description: App not found.
     delete:
       operationId: deleteApp
       tags: [apps]
@@ -468,6 +491,48 @@ paths:
       responses:
         '200':
           description: Promoted patch.
+  /api/v1/apps/{appId}/releases/{releaseId}/patches/{patchId}/rollback:
+    post:
+      operationId: rollbackReleasePatch
+      tags: [patches]
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+        - $ref: '#/components/parameters/ReleaseId'
+        - name: patchId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '204':
+          description: Patch state changed.
+        '304':
+          description: Patch already had the requested state.
+        '403':
+          description: Organization admin access required.
+        '404':
+          description: Release or patch not found within the app.
+  /api/v1/apps/{appId}/releases/{releaseId}/patches/{patchId}/rollforward:
+    post:
+      operationId: rollforwardReleasePatch
+      tags: [patches]
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+        - $ref: '#/components/parameters/ReleaseId'
+        - name: patchId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '204':
+          description: Patch state changed.
+        '304':
+          description: Patch already had the requested state.
+        '403':
+          description: Organization admin access required.
+        '404':
+          description: Release or patch not found within the app.
   /api/v1/apps/{appId}/patches/rollback:
     post:
       operationId: rollbackPatch

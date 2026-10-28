@@ -31,6 +31,9 @@ func NewService(jwtSecret string, tokenDuration time.Duration) *Service {
 	}
 }
 
+// TokenDuration returns the lifetime advertised to OAuth clients.
+func (s *Service) TokenDuration() time.Duration { return s.tokenDuration }
+
 // GenerateToken creates a new JWT for the given user.
 func (s *Service) GenerateToken(userID int, email string) (string, error) {
 	now := time.Now()
@@ -56,7 +59,7 @@ func (s *Service) GenerateToken(userID int, email string) (string, error) {
 func (s *Service) ValidateToken(tokenStr string) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(t *jwt.Token) (interface{}, error) {
 		return s.jwtSecret, nil
-	})
+	}, jwt.WithValidMethods([]string{"HS256"}), jwt.WithIssuer("shorebird-auth"))
 	if err != nil {
 		return nil, err
 	}

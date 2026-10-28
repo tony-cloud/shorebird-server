@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
 	"time"
 
@@ -41,7 +42,7 @@ func (st *ShorebirdTime) Scan(v interface{}) error {
 }
 
 // Value implements driver.Valuer for SQLite INSERTs.
-func (st ShorebirdTime) Value() (interface{}, error) {
+func (st ShorebirdTime) Value() (driver.Value, error) {
 	if st.Time.IsZero() {
 		return nil, nil
 	}
@@ -145,6 +146,7 @@ type Store interface {
 	GetPatchByReleaseNumber(ctx context.Context, releaseID, patchNumber int, arch, platform string) (*PatchWithArtifactRow, error)
 
 	// --- Patch Artifacts ---
+	GetPatchArtifacts(ctx context.Context, patchID int) ([]PatchArtifactRow, error)
 	CreatePatchArtifact(ctx context.Context, patchID int, arch, platform, hash, storageKey string, size int64, hashSignature, podfileLockHash *string, offlineExpiresAt *time.Time) (*PatchArtifactRow, error)
 
 	// --- Patch Events ---
@@ -153,6 +155,7 @@ type Store interface {
 
 	// --- Rollbacks ---
 	RollbackPatch(ctx context.Context, releaseID, patchNumber int) error
+	SetPatchRolledBack(ctx context.Context, releaseID, patchNumber int, rolledBack bool) (bool, error)
 	GetRolledBackPatchNumbers(ctx context.Context, releaseID int) ([]int, error)
 
 	// --- Targeted Devices ---

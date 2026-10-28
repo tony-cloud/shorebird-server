@@ -129,6 +129,24 @@ type AppHandler struct {
 	DB db.Store
 }
 
+// GetApp handles GET /api/v1/apps/{appId}.
+func (h *AppHandler) GetApp(w http.ResponseWriter, r *http.Request) {
+	id, err := parseUUID(chi.URLParam(r, "appId"))
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid app ID", nil)
+		return
+	}
+	app, ok := requireAppAccess(w, r, h.DB, id, false)
+	if !ok {
+		return
+	}
+	respondJSON(w, http.StatusOK, models.AppMetadata{
+		AppID: app.ID.String(), OrganizationID: app.OrganizationID,
+		DisplayName: app.DisplayName, CreatedAt: app.CreatedAt.Time, UpdatedAt: app.UpdatedAt.Time,
+		Platforms: []string{}, LatestReleases: map[string]models.LatestRelease{}, PendingReleases: map[string]models.PendingRelease{},
+	})
+}
+
 // GetApps handles GET /api/v1/apps
 func (h *AppHandler) GetApps(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetClaims(r)

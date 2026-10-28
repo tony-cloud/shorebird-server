@@ -605,7 +605,7 @@ func (db *PgStore) GetLatestPromotedPatch(ctx context.Context, releaseID, channe
 		 JOIN patch_artifacts pa ON p.id = pa.patch_id
 		 WHERE p.release_id = $1 AND pc.channel_id = $2
 		   AND pa.arch = $3 AND pa.platform = $4
-		 ORDER BY p.number DESC LIMIT 1`,
+		 AND NOT EXISTS (SELECT 1 FROM rolled_back_patches rb WHERE rb.release_id = p.release_id AND rb.patch_number = p.number) ORDER BY p.number DESC LIMIT 1`,
 		releaseID, channelID, arch, platform,
 	).Scan(&row.ID, &row.ReleaseID, &row.Number, &row.Notes, &row.CreatedAt,
 		&row.Hash, &row.StorageKey, &row.HashSignature, &row.OfflineExpiresAt)
@@ -694,6 +694,19 @@ func (db *PgStore) ListPatchEventActivity(ctx context.Context, appID uuid.UUID, 
 // --- Rolled back patches ---
 
 // RollbackPatch marks a patch as rolled back.
+// SetPatchRolledBack atomically changes rollback state and reports whether it changed.
+func (db *PgStore) SetPatchRolledBack(ctx context.Context, releaseID, patchNumber int, rolledBack bool) (bool, error) {
+	query := `DELETE FROM rolled_back_patches WHERE release_id = $1 AND patch_number = $2`
+	if rolledBack {
+		query = `INSERT INTO rolled_back_patches (release_id, patch_number) VALUES ($1, $2) ON CONFLICT DO NOTHING`
+	}
+	result, err := db.exec(ctx, query, releaseID, patchNumber)
+	if err != nil {
+		return false, err
+	}
+	return result.RowsAffected() > 0, nil
+}
+
 func (db *PgStore) RollbackPatch(ctx context.Context, releaseID, patchNumber int) error {
 	_, err := db.exec(ctx,
 		`INSERT INTO rolled_back_patches (release_id, patch_number) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
@@ -846,7 +859,7 @@ func (db *PgStore) ConsumeAccountToken(ctx context.Context, tokenHash, tokenType
 	err = tx.QueryRow(ctx,
 		`SELECT id, user_id, token_type, expires_at, used_at, created_at
 		 FROM account_tokens
-		 WHERE token_hash = $1 AND token_type = $2 AND used_at IS NULL AND expires_at > NOW()`,
+		 WHERE token_hash = $1 AND token_type = $2 AND used_at IS NULL AND expires_at > NOW() FOR UPDATE`,
 		tokenHash, tokenType).Scan(&row.ID, &row.UserID, &row.TokenType, &row.ExpiresAt, &row.UsedAt, &row.CreatedAt)
 	if err != nil {
 		return nil, err
@@ -858,4 +871,21 @@ func (db *PgStore) ConsumeAccountToken(ctx context.Context, tokenHash, tokenType
 		return nil, err
 	}
 	return row, nil
+}
+
+func (db *PgStore) GetPatchArtifacts(ctx context.Context, patchID int) ([]PatchArtifactRow, error) {
+	rows, err := db.query(ctx, `SELECT id, patch_id, arch, platform, hash, storage_key, size, hash_signature, podfile_lock_hash, offline_expires_at, created_at FROM patch_artifacts WHERE patch_id = $1 ORDER BY id`, patchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []PatchArtifactRow{}
+	for rows.Next() {
+		var row PatchArtifactRow
+		if err := rows.Scan(&row.ID, &row.PatchID, &row.Arch, &row.Platform, &row.Hash, &row.StorageKey, &row.Size, &row.HashSignature, &row.PodfileLockHash, &row.OfflineExpiresAt, &row.CreatedAt); err != nil {
+			return nil, err
+		}
+		result = append(result, row)
+	}
+	return result, rows.Err()
 }

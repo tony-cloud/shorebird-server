@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
@@ -198,22 +199,42 @@ func (h *PatchHandler) GetPatches(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	type releasePatch struct {
-		ID          int       `json:"id"`
-		ReleaseID   int       `json:"release_id"`
-		PatchID     int       `json:"patch_id"`
-		PatchNumber int       `json:"patch_number"`
-		CreatedAt   time.Time `json:"created_at"`
+	rolledBack, err := h.DB.GetRolledBackPatchNumbers(r.Context(), releaseID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to fetch rollback state", nil)
+		return
 	}
-
-	var result []releasePatch
+	channels, err := h.DB.GetChannelsByAppID(r.Context(), appID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to fetch channels", nil)
+		return
+	}
+	channelNames := map[int]string{}
+	for _, channel := range channels {
+		channelNames[channel.ID] = channel.Name
+	}
+	result := []map[string]interface{}{}
+	seen := map[int]bool{}
 	for _, p := range patches {
-		result = append(result, releasePatch{
-			ID:          p.ID,
-			ReleaseID:   p.ReleaseID,
-			PatchID:     p.ID,
-			PatchNumber: p.Number,
-			CreatedAt:   p.PromotedAt.Time,
+		if seen[p.ID] {
+			continue
+		}
+		seen[p.ID] = true
+		artifacts, err := h.DB.GetPatchArtifacts(r.Context(), p.ID)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "Failed to fetch patch artifacts", nil)
+			return
+		}
+		artifactJSON := []map[string]interface{}{}
+		for _, a := range artifacts {
+			artifactJSON = append(artifactJSON, map[string]interface{}{
+				"id": a.ID, "patch_id": a.PatchID, "arch": a.Arch, "platform": a.Platform, "hash": a.Hash, "size": a.Size, "created_at": a.CreatedAt.Time,
+			})
+		}
+		result = append(result, map[string]interface{}{
+			"id": p.ID, "release_id": p.ReleaseID, "patch_id": p.ID, "patch_number": p.Number,
+			"number": p.Number, "artifacts": artifactJSON, "is_rolled_back": slices.Contains(rolledBack, p.Number),
+			"channel": channelNames[p.ChannelID], "notes": p.Notes, "created_at": p.CreatedAt.Time,
 		})
 	}
 
@@ -288,4 +309,52 @@ func (h *PatchHandler) patchBelongsToApp(w http.ResponseWriter, r *http.Request,
 		return false
 	}
 	return true
+}
+
+// RollbackPatch and RollforwardPatch implement the CLI's release-scoped lifecycle.
+func (h *PatchHandler) RollbackPatch(w http.ResponseWriter, r *http.Request) {
+	h.setRolledBack(w, r, true)
+}
+func (h *PatchHandler) RollforwardPatch(w http.ResponseWriter, r *http.Request) {
+	h.setRolledBack(w, r, false)
+}
+func (h *PatchHandler) setRolledBack(w http.ResponseWriter, r *http.Request, rolledBack bool) {
+	appID, err := uuid.Parse(chi.URLParam(r, "appId"))
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid app ID", nil)
+		return
+	}
+	if _, ok := requireAppAccess(w, r, h.DB, appID, true); !ok {
+		return
+	}
+	releaseID, err := strconv.Atoi(chi.URLParam(r, "releaseId"))
+	if err != nil || releaseID <= 0 {
+		respondError(w, http.StatusBadRequest, "Invalid release ID", nil)
+		return
+	}
+	patchID, err := strconv.Atoi(chi.URLParam(r, "patchId"))
+	if err != nil || patchID <= 0 {
+		respondError(w, http.StatusBadRequest, "Invalid patch ID", nil)
+		return
+	}
+	release, err := h.DB.GetReleaseByID(r.Context(), releaseID)
+	if err != nil || release.AppID != appID {
+		respondError(w, http.StatusNotFound, "Release not found for this app", nil)
+		return
+	}
+	patch, err := h.DB.GetPatchByID(r.Context(), patchID)
+	if err != nil || patch.ReleaseID != releaseID {
+		respondError(w, http.StatusNotFound, "Patch not found for this release", nil)
+		return
+	}
+	changed, err := h.DB.SetPatchRolledBack(r.Context(), releaseID, patch.Number, rolledBack)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to change rollback state", nil)
+		return
+	}
+	if !changed {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

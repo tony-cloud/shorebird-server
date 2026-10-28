@@ -75,7 +75,7 @@ func NewRouter(authService *authpkg.Service, database db.Store, store storage.St
 		r.Post("/password-reset", authHandler.ResetPassword)
 		r.Get("/sso/login", authHandler.SSOLogin)
 		r.Get("/sso/callback", authHandler.SSOCallback)
-		r.With(authMw).Post("/refresh", authHandler.Refresh)
+		r.Post("/refresh", authHandler.Refresh)
 	})
 
 	// --- API v1 routes ---
@@ -101,6 +101,7 @@ func NewRouter(authService *authpkg.Service, database db.Store, store storage.St
 
 			// Apps
 			r.Get("/apps", appHandler.GetApps)
+			r.Get("/apps/{appId}", appHandler.GetApp)
 			r.Post("/apps", appHandler.CreateApp)
 			r.Delete("/apps/{appId}", appHandler.DeleteApp)
 			r.Patch("/apps/{appId}/transfer", appHandler.TransferApp)
@@ -135,6 +136,8 @@ func NewRouter(authService *authpkg.Service, database db.Store, store storage.St
 			r.Post("/apps/{appId}/patches/promote", patchHandler.PromotePatch)
 
 			// Rollback
+			r.Post("/apps/{appId}/releases/{releaseId}/patches/{patchId}/rollback", patchHandler.RollbackPatch)
+			r.Post("/apps/{appId}/releases/{releaseId}/patches/{patchId}/rollforward", patchHandler.RollforwardPatch)
 			r.Post("/apps/{appId}/patches/rollback", deviceHandler.RollbackPatch)
 
 			// Diagnostics

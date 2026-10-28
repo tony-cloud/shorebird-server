@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/shorebird-server/internal/api/middleware"
 	"github.com/shorebird-server/internal/db"
@@ -268,6 +269,33 @@ func (h *DeviceHandler) RollbackPatch(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "Invalid request body", nil)
+		return
+	}
+
+	appID, err := uuid.Parse(chi.URLParam(r, "appId"))
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid app ID", nil)
+		return
+	}
+	release, err := h.DB.GetReleaseByID(r.Context(), req.ReleaseID)
+	if err != nil || release.AppID != appID {
+		respondError(w, http.StatusNotFound, "Release not found for this app", nil)
+		return
+	}
+	patches, err := h.DB.GetPatchesByReleaseID(r.Context(), req.ReleaseID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to fetch patches", nil)
+		return
+	}
+	found := false
+	for _, patch := range patches {
+		if patch.Number == req.PatchNumber {
+			found = true
+			break
+		}
+	}
+	if !found {
+		respondError(w, http.StatusNotFound, "Patch not found for this release", nil)
 		return
 	}
 

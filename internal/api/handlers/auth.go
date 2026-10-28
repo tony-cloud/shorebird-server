@@ -14,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shorebird-server/internal/api/middleware"
 	"github.com/shorebird-server/internal/auth"
 	"github.com/shorebird-server/internal/db"
 	"github.com/shorebird-server/internal/email"
@@ -154,7 +153,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 				respondError(w, http.StatusForbidden, "Email verification required", strPtr("Verify your email address before signing in."))
 				return
 			}
-			h.writeOAuthTokenResponse(w, user.ID, user.Email)
+			h.writeOAuthTokenResponse(w, r, user.ID, user.Email)
 
 		case "refresh_token":
 			refreshToken := r.FormValue("refresh_token")
@@ -162,17 +161,17 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 				respondError(w, http.StatusBadRequest, "Missing refresh_token parameter", nil)
 				return
 			}
-			claims, err := h.AuthService.ValidateToken(strings.TrimPrefix(refreshToken, "sb_api_"))
+			session, err := h.DB.ConsumeAccountToken(r.Context(), hashToken(refreshToken), "refresh")
 			if err != nil {
 				respondError(w, http.StatusBadRequest, "Invalid refresh token", nil)
 				return
 			}
-			user, err := h.DB.GetUserByID(r.Context(), claims.UserID)
+			user, err := h.DB.GetUserByID(r.Context(), session.UserID)
 			if err != nil || !user.EmailVerified {
 				respondError(w, http.StatusForbidden, "Email verification required", nil)
 				return
 			}
-			h.writeOAuthTokenResponse(w, claims.UserID, claims.Email)
+			h.writeOAuthTokenResponse(w, r, user.ID, user.Email)
 
 		default:
 			respondError(w, http.StatusBadRequest, "Unsupported grant_type: "+grantType, nil)
@@ -208,7 +207,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	refreshToken, err := auth.GenerateRefreshToken()
+	refreshToken, err := h.createRefreshToken(r, user.ID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "Failed to generate refresh token", nil)
 		return
@@ -224,19 +223,55 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 // Refresh handles POST /auth/refresh
 func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
-	claims := middleware.GetClaims(r)
-	if claims == nil {
-		respondError(w, http.StatusUnauthorized, "Invalid token", nil)
+	var req struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	var userID int
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		if err := decodeJSON(r, &req); err != nil {
+			respondError(w, http.StatusBadRequest, "Invalid request body", nil)
+			return
+		}
+	}
+	if req.RefreshToken != "" {
+		session, err := h.DB.ConsumeAccountToken(r.Context(), hashToken(req.RefreshToken), "refresh")
+		if err != nil {
+			respondError(w, http.StatusUnauthorized, "Invalid refresh token", nil)
+			return
+		}
+		userID = session.UserID
+	} else {
+		// Preserve the legacy access-token refresh route without accepting JWTs as OAuth refresh credentials.
+		parts := strings.Fields(r.Header.Get("Authorization"))
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
+			respondError(w, http.StatusUnauthorized, "Invalid token", nil)
+			return
+		}
+		claims, err := h.AuthService.ValidateToken(strings.TrimPrefix(parts[1], "sb_api_"))
+		if err != nil {
+			respondError(w, http.StatusUnauthorized, "Invalid token", nil)
+			return
+		}
+		userID = claims.UserID
+	}
+	user, err := h.DB.GetUserByID(r.Context(), userID)
+	if err != nil || !user.EmailVerified {
+		respondError(w, http.StatusForbidden, "Email verification required", nil)
 		return
 	}
 
-	token, err := h.AuthService.GenerateToken(claims.UserID, claims.Email)
+	if user.MustChangePassword {
+		respondError(w, http.StatusForbidden, "Password change required", nil)
+		return
+	}
+
+	token, err := h.AuthService.GenerateToken(user.ID, user.Email)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "Failed to generate token", nil)
 		return
 	}
 
-	refreshToken, err := auth.GenerateRefreshToken()
+	refreshToken, err := h.createRefreshToken(r, user.ID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "Failed to generate refresh token", nil)
 		return
@@ -245,7 +280,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, models.AuthTokenResponse{
 		Token:        token,
 		RefreshToken: refreshToken,
-		Email:        claims.Email,
+		Email:        user.Email,
 	})
 }
 
@@ -576,14 +611,32 @@ func (h *AuthHandler) exchangeCasdoorProfile(r *http.Request, code string) (*cas
 	return profile, nil
 }
 
-func (h *AuthHandler) writeOAuthTokenResponse(w http.ResponseWriter, userID int, email string) {
-	jwt, _ := h.AuthService.GenerateToken(userID, email)
-	refresh, _ := auth.GenerateRefreshToken()
+// Refresh credentials are opaque, hashed at rest, expire, and rotate on use.
+func (h *AuthHandler) createRefreshToken(r *http.Request, userID int) (string, error) {
+	token, err := auth.GenerateRefreshToken()
+	if err != nil {
+		return "", err
+	}
+	token = "sb_rt_" + token
+	if err := h.DB.CreateAccountToken(r.Context(), userID, hashToken(token), "refresh", time.Now().Add(30*24*time.Hour)); err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+func (h *AuthHandler) writeOAuthTokenResponse(w http.ResponseWriter, r *http.Request, userID int, email string) {
+	token, err := h.AuthService.GenerateToken(userID, email)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to generate token", nil)
+		return
+	}
+	refresh, err := h.createRefreshToken(r, userID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to generate refresh token", nil)
+		return
+	}
 	respondJSON(w, http.StatusOK, oauthTokenResponse{
-		AccessToken:  jwt,
-		RefreshToken: "sb_rt_" + refresh,
-		TokenType:    "Bearer",
-		ExpiresIn:    900,
+		AccessToken: token, RefreshToken: refresh, TokenType: "Bearer", ExpiresIn: int(h.AuthService.TokenDuration().Seconds()),
 	})
 }
 

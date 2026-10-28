@@ -507,7 +507,7 @@ func (s *SqliteStore) PromotePatch(ctx context.Context, patchID, channelID int) 
 }
 func (s *SqliteStore) GetLatestPromotedPatch(ctx context.Context, releaseID, channelID int, arch, platform string) (*PatchWithArtifactRow, error) {
 	r := &PatchWithArtifactRow{}
-	err := s.db.QueryRowContext(ctx, `SELECT p.id, p.release_id, p.number, p.notes, p.created_at, pa.hash, pa.storage_key, pa.hash_signature, pa.offline_expires_at FROM patches p JOIN patch_channels pc ON p.id = pc.patch_id JOIN patch_artifacts pa ON p.id = pa.patch_id WHERE p.release_id = ? AND pc.channel_id = ? AND pa.arch = ? AND pa.platform = ? ORDER BY p.number DESC LIMIT 1`, releaseID, channelID, arch, platform).Scan(&r.ID, &r.ReleaseID, &r.Number, &r.Notes, &r.CreatedAt, &r.Hash, &r.StorageKey, &r.HashSignature, &r.OfflineExpiresAt)
+	err := s.db.QueryRowContext(ctx, `SELECT p.id, p.release_id, p.number, p.notes, p.created_at, pa.hash, pa.storage_key, pa.hash_signature, pa.offline_expires_at FROM patches p JOIN patch_channels pc ON p.id = pc.patch_id JOIN patch_artifacts pa ON p.id = pa.patch_id WHERE p.release_id = ? AND pc.channel_id = ? AND pa.arch = ? AND pa.platform = ? AND NOT EXISTS (SELECT 1 FROM rolled_back_patches rb WHERE rb.release_id = p.release_id AND rb.patch_number = p.number) ORDER BY p.number DESC LIMIT 1`, releaseID, channelID, arch, platform).Scan(&r.ID, &r.ReleaseID, &r.Number, &r.Notes, &r.CreatedAt, &r.Hash, &r.StorageKey, &r.HashSignature, &r.OfflineExpiresAt)
 	if err != nil {
 		return nil, err
 	}
@@ -560,6 +560,20 @@ func (s *SqliteStore) ListPatchEventActivity(ctx context.Context, appID uuid.UUI
 }
 
 // --- Rollbacks ---
+// SetPatchRolledBack atomically changes rollback state and reports whether it changed.
+func (s *SqliteStore) SetPatchRolledBack(ctx context.Context, releaseID, patchNumber int, rolledBack bool) (bool, error) {
+	query := `DELETE FROM rolled_back_patches WHERE release_id = ? AND patch_number = ?`
+	if rolledBack {
+		query = `INSERT OR IGNORE INTO rolled_back_patches (release_id, patch_number) VALUES (?, ?)`
+	}
+	result, err := s.db.ExecContext(ctx, query, releaseID, patchNumber)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	return affected > 0, err
+}
+
 func (s *SqliteStore) RollbackPatch(ctx context.Context, releaseID, patchNumber int) error {
 	_, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO rolled_back_patches (release_id, patch_number) VALUES (?, ?)`, releaseID, patchNumber)
 	return err
@@ -672,4 +686,21 @@ func (s *SqliteStore) migrate(ctx context.Context) error {
 			('casdoor_organization', 'built-in');
 	`)
 	return err
+}
+
+func (s *SqliteStore) GetPatchArtifacts(ctx context.Context, patchID int) ([]PatchArtifactRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, patch_id, arch, platform, hash, storage_key, size, hash_signature, podfile_lock_hash, offline_expires_at, created_at FROM patch_artifacts WHERE patch_id = ? ORDER BY id`, patchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []PatchArtifactRow{}
+	for rows.Next() {
+		var row PatchArtifactRow
+		if err := rows.Scan(&row.ID, &row.PatchID, &row.Arch, &row.Platform, &row.Hash, &row.StorageKey, &row.Size, &row.HashSignature, &row.PodfileLockHash, &row.OfflineExpiresAt, &row.CreatedAt); err != nil {
+			return nil, err
+		}
+		result = append(result, row)
+	}
+	return result, rows.Err()
 }
