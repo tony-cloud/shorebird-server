@@ -350,3 +350,68 @@ func decryptPatchForTestWithError(secret []byte, metadata *models.PatchEncryptio
 	}
 	return gcm.Open(nil, nonce, ciphertext, aadBytes)
 }
+
+func TestEncryptedDeliveryBindsActualTransportAndRepairsInconsistentCache(t *testing.T) {
+	for _, cacheEnabled := range []bool{true, false} {
+		t.Run(fmt.Sprintf("cache=%v", cacheEnabled), func(t *testing.T) {
+			fixture := newPatchCheckFixture(t)
+			secret := []byte("server-secret")
+			fixture.handler.PatchDelivery = PatchDeliveryConfig{EncryptionMode: PatchDeliveryEncryptionPerDeviceAESGCM, AESSecret: secret, CacheEncryptedPatches: cacheEnabled}
+			fixture.createPatch(t, 1, time.Now().Add(time.Hour))
+			clientID := "same-device"
+			request := &models.PatchCheckRequest{ReleaseVersion: testReleaseVersion, Platform: testPlatform, Arch: testArch, AppID: fixture.appID.String(), Channel: "stable", ClientID: &clientID, AcceptEncryptedPatch: true}
+			first := fixture.patchCheck(t, request)
+			firstMeta := first.Patch.Encryption
+			firstCiphertext := fixture.readObject(t, firstMeta.CacheKey)
+			// A publisher can produce different compressed/diff transport bytes for the
+			// same final installed binary. Reupload without changing its registered hash.
+			secondTransport := []byte("different compressed transport for the same final installed artifact")
+			key := storage.GeneratePatchStorageKey(fixture.appID.String(), fixture.releaseID, 1, testPlatform, testArch, "dlc.vmcode")
+			if err := fixture.storage.UploadObject(context.Background(), key, bytes.NewReader(secondTransport), int64(len(secondTransport)), "application/octet-stream", true); err != nil {
+				t.Fatal(err)
+			}
+			second := fixture.patchCheck(t, request)
+			secondMeta := second.Patch.Encryption
+			if first.Patch.Hash != second.Patch.Hash {
+				t.Fatal("test must preserve the final artifact hash")
+			}
+			if firstMeta.Nonce == secondMeta.Nonce || firstMeta.KeyID == secondMeta.KeyID || firstMeta.CacheKey == secondMeta.CacheKey {
+				t.Fatalf("changed transport reused encryption context: first=%+v second=%+v", firstMeta, secondMeta)
+			}
+			firstAAD, err := base64.RawURLEncoding.DecodeString(firstMeta.AAD)
+			if err != nil {
+				t.Fatal(err)
+			}
+			secondAAD, err := base64.RawURLEncoding.DecodeString(secondMeta.AAD)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Equal(derivePatchDeliveryKey(secret, string(firstAAD)), derivePatchDeliveryKey(secret, string(secondAAD))) {
+				t.Fatal("changed transport reused AES key")
+			}
+			if !bytes.Contains(secondAAD, []byte("transport_hash="+sha256Hex(secondTransport))) || !strings.Contains(secondMeta.CacheKey, sha256Hex(secondTransport)) {
+				t.Fatalf("transport digest absent from context or cache key: %s %s", secondAAD, secondMeta.CacheKey)
+			}
+			secondCiphertext := fixture.readObject(t, secondMeta.CacheKey)
+			if secondMeta.EncryptedHash != sha256Hex(secondCiphertext) || secondMeta.AADHash != sha256Hex(secondAAD) {
+				t.Fatal("metadata does not describe the stored ciphertext and AAD")
+			}
+			if !bytes.Equal(decryptPatchForTest(t, secret, secondMeta, secondCiphertext), secondTransport) {
+				t.Fatal("new context decrypted stale transport bytes")
+			}
+			if string(decryptPatchForTest(t, secret, firstMeta, firstCiphertext)) != "patch-1-plaintext" {
+				t.Fatal("old cache entry was replaced")
+			}
+			// A corrupt/partial cached object must never be returned with valid-looking
+			// derived metadata; deterministic ciphertext allows exact cache validation.
+			if err := fixture.storage.UploadObject(context.Background(), secondMeta.CacheKey, strings.NewReader("corrupt"), 7, "application/octet-stream", true); err != nil {
+				t.Fatal(err)
+			}
+			repeat := fixture.patchCheck(t, request)
+			repaired := fixture.readObject(t, repeat.Patch.Encryption.CacheKey)
+			if repeat.Patch.Encryption.CacheKey != secondMeta.CacheKey || !bytes.Equal(repaired, secondCiphertext) || repeat.Patch.Encryption.EncryptedHash != sha256Hex(repaired) {
+				t.Fatal("cache repair did not restore consistent ciphertext metadata")
+			}
+		})
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -23,7 +24,7 @@ type LocalStore struct {
 	// serverBaseURL is the external URL of this server (e.g. http://localhost:8080).
 	// Used when generating download URLs for device-side patch checks.
 	serverBaseURL string
-	uploadSecret  string
+	uploadSecret  string // also signs private download grants
 }
 
 // NewLocalStore creates a local-filesystem storage backend.
@@ -50,17 +51,63 @@ func (s *LocalStore) BackendName() string { return "Local filesystem" }
 // GeneratePresignedUploadURL returns a server endpoint URL that the
 // CLI can POST the artifact to.  The upload handler (registered on
 // the router) writes the file to disk.
-func (s *LocalStore) GeneratePresignedUploadURL(_ context.Context, objectKey string, isPublic bool, _ time.Duration) (string, error) {
+func (s *LocalStore) GeneratePresignedUploadURL(_ context.Context, objectKey string, isPublic bool, expiry time.Duration, size ...int64) (string, error) {
 	scope := "releases"
 	if isPublic {
 		scope = "patches"
 	}
-	base := fmt.Sprintf("%s/storage/upload/%s/%s", s.serverBaseURL, scope, objectKey)
+	if !validUploadKey(scope, objectKey) {
+		return "", fmt.Errorf("invalid upload object key")
+	}
+	if len(size) > 0 {
+		return (UploadProxyConfig{BaseURL: s.serverBaseURL, Secret: s.uploadSecret}).generate(scope, objectKey, expiry, size[0])
+	}
+	base, err := s.transferURL("upload", scope, objectKey)
+	if err != nil {
+		return "", err
+	}
 	if s.uploadSecret == "" {
-		return base, nil
+		return base.String(), nil
 	}
 	expires := time.Now().Add(30 * time.Minute).Unix()
-	return fmt.Sprintf("%s?expires=%d&token=%s", base, expires, s.signUpload(scope, objectKey, expires)), nil
+	base.RawQuery = url.Values{"expires": {strconv.FormatInt(expires, 10)}, "token": {s.signUpload(scope, objectKey, expires)}}.Encode()
+	return base.String(), nil
+}
+
+// GeneratePresignedDownloadURL grants expiring read access independently of upload URLs.
+func (s *LocalStore) GeneratePresignedDownloadURL(_ context.Context, objectKey string, isPublic bool, expiry time.Duration) (string, error) {
+	if s.uploadSecret == "" {
+		return "", fmt.Errorf("local storage: download signing secret is not configured")
+	}
+	if expiry <= 0 {
+		return "", fmt.Errorf("local storage: download expiry must be positive")
+	}
+	scope := "releases"
+	if isPublic {
+		scope = "patches"
+	}
+	if _, err := s.objectPath(scope, objectKey); err != nil {
+		return "", err
+	}
+	expires := time.Now().Add(expiry).Unix()
+	base, err := s.transferURL("dl", scope, objectKey)
+	if err != nil {
+		return "", err
+	}
+	base.RawQuery = url.Values{"expires": {strconv.FormatInt(expires, 10)}, "token": {s.signDownload(scope, objectKey, expires)}}.Encode()
+	return base.String(), nil
+}
+
+func (s *LocalStore) transferURL(operation, scope, objectKey string) (*url.URL, error) {
+	base, err := url.Parse(s.serverBaseURL)
+	if err != nil {
+		return nil, err
+	}
+	base.Path = strings.TrimRight(base.Path, "/") + "/storage/" + operation + "/" + scope + "/" + objectKey
+	base.RawPath = ""
+	base.RawQuery = ""
+	base.Fragment = ""
+	return base, nil
 }
 
 // GeneratePublicDownloadURL returns a public download URL for a patch.
@@ -81,14 +128,22 @@ func (s *LocalStore) UploadObject(_ context.Context, objectKey string, reader io
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return fmt.Errorf("local storage: %w", err)
 	}
-	f, err := os.Create(target)
+	f, err := os.CreateTemp(filepath.Dir(target), ".upload-*")
 	if err != nil {
 		return fmt.Errorf("local storage: %w", err)
 	}
-	defer f.Close()
+	defer os.Remove(f.Name())
 	if _, err := io.Copy(f, reader); err != nil {
+		f.Close()
 		return fmt.Errorf("local storage: write: %w", err)
 	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("local storage: close: %w", err)
+	}
+	if err := os.Rename(f.Name(), target); err != nil {
+		return fmt.Errorf("local storage: publish: %w", err)
+	}
+
 	return nil
 }
 
@@ -108,7 +163,13 @@ func (s *LocalStore) GetObject(_ context.Context, objectKey string, isPublic boo
 // BaseDir returns the absolute base directory.
 func (s *LocalStore) BaseDir() string { return s.baseDir }
 
-func (s *LocalStore) ValidateUploadToken(scope, objectKey, token string, expires int64) bool {
+func (s *LocalStore) ValidateUploadToken(scope, objectKey, token string, expires int64, size ...int64) bool {
+	if len(size) > 0 {
+		return (UploadProxyConfig{BaseURL: s.serverBaseURL, Secret: s.uploadSecret}).validate(scope, objectKey, token, expires, size[0])
+	}
+	if !validUploadKey(scope, objectKey) {
+		return false
+	}
 	if s.uploadSecret == "" {
 		return true
 	}
@@ -117,6 +178,18 @@ func (s *LocalStore) ValidateUploadToken(scope, objectKey, token string, expires
 	}
 	expected := s.signUpload(scope, objectKey, expires)
 	return hmac.Equal([]byte(token), []byte(expected))
+}
+
+func (s *LocalStore) ValidateDownloadToken(scope, objectKey, token string, expires int64) bool {
+	if s.uploadSecret == "" || token == "" || expires <= time.Now().Unix() {
+		return false
+	}
+	return hmac.Equal([]byte(token), []byte(s.signDownload(scope, objectKey, expires)))
+}
+func (s *LocalStore) signDownload(scope, objectKey string, expires int64) string {
+	mac := hmac.New(sha256.New, []byte(s.uploadSecret))
+	io.WriteString(mac, "download\n"+scope+"\n"+objectKey+"\n"+strconv.FormatInt(expires, 10))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
 func (s *LocalStore) signUpload(scope, objectKey string, expires int64) string {

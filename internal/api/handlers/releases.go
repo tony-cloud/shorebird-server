@@ -3,10 +3,8 @@ package handlers
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -218,7 +216,11 @@ func (h *ReleaseHandler) CreateReleaseArtifact(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	size, _ := strconv.ParseInt(sizeStr, 10, 64)
+	size, err := strconv.ParseInt(sizeStr, 10, 64)
+	if err != nil || size <= 0 || size > maxStorageUploadBytes {
+		respondError(w, http.StatusBadRequest, "Invalid artifact size", nil)
+		return
+	}
 	canSideload := canSideloadStr == "true"
 
 	// Get the release to know its version
@@ -232,7 +234,7 @@ func (h *ReleaseHandler) CreateReleaseArtifact(w http.ResponseWriter, r *http.Re
 	storageKey := storage.GenerateReleaseStorageKey(appID, release.Version, platform, arch, filename)
 
 	// Generate presigned upload URL
-	uploadURL, err := h.Storage.GeneratePresignedUploadURL(r.Context(), storageKey, false, 30*time.Minute)
+	uploadURL, err := h.Storage.GeneratePresignedUploadURL(r.Context(), storageKey, false, 30*time.Minute, size)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "Failed to generate upload URL", strPtr(err.Error()))
 		return
@@ -308,8 +310,12 @@ func (h *ReleaseHandler) GetReleaseArtifacts(w http.ResponseWriter, r *http.Requ
 			respondError(w, http.StatusInternalServerError, "Failed to load release signing policy", nil)
 			return
 		}
-		// Build a download URL for the artifact
-		downloadURL := fmt.Sprintf("%s/storage/dl/releases/%s", strings.TrimRight(h.BaseURL, "/"), a.StorageKey)
+		// Storage owns URL generation: local reads are signed and S3 reads use its private bucket.
+		downloadURL, err := h.Storage.GeneratePresignedDownloadURL(r.Context(), a.StorageKey, false, 30*time.Minute)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "Failed to generate artifact download URL", nil)
+			return
+		}
 		result = append(result, models.ReleaseArtifact{
 			ID:              a.ID,
 			ReleaseID:       a.ReleaseID,

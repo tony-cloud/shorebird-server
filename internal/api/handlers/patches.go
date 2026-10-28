@@ -101,7 +101,11 @@ func (h *PatchHandler) CreatePatchArtifact(w http.ResponseWriter, r *http.Reques
 	podfileLockHash := r.FormValue("podfile_lock_hash")
 	offlineExpiresAtRaw := r.FormValue("offline_expires_at")
 
-	size, _ := strconv.ParseInt(sizeStr, 10, 64)
+	size, err := strconv.ParseInt(sizeStr, 10, 64)
+	if err != nil || size <= 0 || size > maxStorageUploadBytes {
+		respondError(w, http.StatusBadRequest, "Invalid artifact size", nil)
+		return
+	}
 	var offlineExpiresAt *time.Time
 	if offlineExpiresAtRaw != "" {
 		parsed, err := time.Parse(time.RFC3339, offlineExpiresAtRaw)
@@ -140,7 +144,7 @@ func (h *PatchHandler) CreatePatchArtifact(w http.ResponseWriter, r *http.Reques
 	storageKey := storage.GeneratePatchStorageKey(appID, release.ID, patch.Number, platform, arch, filename)
 
 	// Generate presigned upload URL (public bucket)
-	uploadURL, err := h.Storage.GeneratePresignedUploadURL(r.Context(), storageKey, true, 30*time.Minute)
+	uploadURL, err := h.Storage.GeneratePresignedUploadURL(r.Context(), storageKey, true, 30*time.Minute, size)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "Failed to generate upload URL", strPtr(err.Error()))
 		return

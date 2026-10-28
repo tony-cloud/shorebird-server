@@ -76,17 +76,20 @@ func (h *DeviceHandler) maybeEncryptedPatchDelivery(ctx context.Context, appID u
 		return nil, fmt.Errorf("patch delivery encryption is enabled but PATCH_DELIVERY_AES_SECRET is empty")
 	}
 
-	clientID := *req.ClientID
-	deviceIDHash := sha256Hex([]byte(clientID))
-	aad := patchDeliveryAAD(appID, releaseID, req, patch, deviceIDHash)
-	key := derivePatchDeliveryKey(h.PatchDelivery.AESSecret, aad)
-	nonce := derivePatchDeliveryNonce(h.PatchDelivery.AESSecret, aad)
-	keyID := base64.RawURLEncoding.EncodeToString(hmacDigest(h.PatchDelivery.AESSecret, []byte("key-id\x00"+aad))[:12])
-
 	plaintext, err := h.readPatchObject(ctx, patch.StorageKey)
 	if err != nil {
 		return nil, fmt.Errorf("read plaintext patch: %w", err)
 	}
+	// A final installed hash may have multiple valid compressed/diff transports.
+	// Bind deterministic key/nonce derivation to the exact bytes encrypted here.
+	transportHash := sha256Hex(plaintext)
+	clientID := *req.ClientID
+	deviceIDHash := sha256Hex([]byte(clientID))
+	aad := patchDeliveryAAD(appID, releaseID, req, patch, deviceIDHash, transportHash)
+	key := derivePatchDeliveryKey(h.PatchDelivery.AESSecret, aad)
+	nonce := derivePatchDeliveryNonce(h.PatchDelivery.AESSecret, aad)
+	keyID := base64.RawURLEncoding.EncodeToString(hmacDigest(h.PatchDelivery.AESSecret, []byte("key-id\x00"+aad))[:12])
+
 	ciphertext, err := encryptPatchPayload(key, nonce, []byte(aad), plaintext)
 	if err != nil {
 		return nil, err
@@ -99,12 +102,13 @@ func (h *DeviceHandler) maybeEncryptedPatchDelivery(ctx context.Context, appID u
 		req.Platform,
 		req.Arch,
 		patch.Hash,
+		transportHash,
 		deviceIDHash,
 		keyID,
 	)
 	cachedCiphertext := ciphertext
 	if h.PatchDelivery.CacheEncryptedPatches {
-		if existing, err := h.readPatchObject(ctx, cacheKey); err == nil && len(existing) > 0 {
+		if existing, err := h.readPatchObject(ctx, cacheKey); err == nil && bytes.Equal(existing, ciphertext) {
 			cachedCiphertext = existing
 		} else if err := h.Storage.UploadObject(ctx, cacheKey, bytes.NewReader(ciphertext), int64(len(ciphertext)), "application/octet-stream", true); err != nil {
 			return nil, fmt.Errorf("cache encrypted patch: %w", err)
@@ -153,13 +157,14 @@ func (h *DeviceHandler) readPatchObject(ctx context.Context, objectKey string) (
 	return io.ReadAll(reader)
 }
 
-func patchDeliveryAAD(appID uuid.UUID, releaseID int, req models.PatchCheckRequest, patch *db.PatchWithArtifactRow, deviceIDHash string) string {
+func patchDeliveryAAD(appID uuid.UUID, releaseID int, req models.PatchCheckRequest, patch *db.PatchWithArtifactRow, deviceIDHash, transportHash string) string {
 	return fmt.Sprintf(
-		"open-aot-patch-delivery-v1\napp_id=%s\nrelease_id=%d\npatch_number=%d\npatch_hash=%s\nplatform=%s\narch=%s\ndevice_id_hash=%s",
+		"open-aot-patch-delivery-v2\napp_id=%s\nrelease_id=%d\npatch_number=%d\npatch_hash=%s\ntransport_hash=%s\nplatform=%s\narch=%s\ndevice_id_hash=%s",
 		appID.String(),
 		releaseID,
 		patch.Number,
 		patch.Hash,
+		transportHash,
 		req.Platform,
 		req.Arch,
 		deviceIDHash,

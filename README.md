@@ -85,6 +85,26 @@ These routes are independently optional; empty settings disable them. Invalid
 mirror or proxy configuration prevents startup. The proxy still needs the
 matching published custom SDK and engine artifacts for each supported target.
 
+### Multipart uploads with local or S3 storage
+
+Both backends return API-origin multipart POST upload URLs matching the CLI's
+existing upload protocol. The S3 adapter streams the file bytes to object
+storage with server credentials; it does not return a bare presigned PUT URL.
+Set `SERVER_BASE_URL` to the API's externally reachable origin for either backend.
+
+New upload grants bind the storage scope, object key, expiry, and exact declared
+file size (positive, at most 2 GiB). Changing a grant is rejected. A stream that
+is shorter or longer than its declared size is rejected before a complete
+object can be published. Local storage publishes completed uploads atomically.
+
+### Private release artifact downloads
+
+Authenticated artifact listings issue 30-minute read URLs through the configured
+storage backend. Local release downloads require a scope/object-bound token;
+S3 downloads use the private release bucket's presigned GET URL. Upload grants
+cannot authorize downloads, and the API storage proxy does not expose private
+S3 objects. Public patch-download behavior is unchanged.
+
 ### Managed patch signing
 
 The CLI's default signing mode requires a separately provisioned wrapping key:
@@ -141,7 +161,11 @@ capability or identity returns HTTP 400 with the respective code
 it never selects a plaintext fallback. Missing server secrets or an unknown
 encryption mode fail closed. Capable clients receive an AES-GCM ciphertext URL
 and encryption metadata derived from the server secret and app/device/patch
-context.
+context. Version 2 authenticated data also includes SHA-256 of the actual
+compressed/diff transport bytes. Reuploading different transport for the same
+final installed hash derives a different AES key, nonce, and cache object.
+Cached ciphertext is checked against its deterministic expected bytes before
+reuse, and local writes publish atomically.
 
 Secure client key provisioning and a compatible decrypting installation path
 must be supplied separately. This server does not provide a key provisioning

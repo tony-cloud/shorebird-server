@@ -9,8 +9,9 @@ import (
 
 // Store is the storage backend interface.
 type Store interface {
-	GeneratePresignedUploadURL(ctx context.Context, objectKey string, isPublic bool, expiry time.Duration) (string, error)
+	GeneratePresignedUploadURL(ctx context.Context, objectKey string, isPublic bool, expiry time.Duration, size ...int64) (string, error)
 	GeneratePublicDownloadURL(ctx context.Context, objectKey string) (string, error)
+	GeneratePresignedDownloadURL(ctx context.Context, objectKey string, isPublic bool, expiry time.Duration) (string, error)
 	UploadObject(ctx context.Context, objectKey string, reader io.Reader, size int64, contentType string, isPublic bool) error
 	GetObject(ctx context.Context, objectKey string, isPublic bool) (io.ReadCloser, error)
 	BackendName() string
@@ -29,6 +30,6 @@ func GeneratePatchStorageKey(appID string, releaseID int, patchNumber int, platf
 // GenerateDeviceEncryptedPatchStorageKey creates a cache key for a patch
 // encrypted specifically for a device. deviceIDHash must be a non-reversible
 // hash of the updater device/client ID, not the raw ID.
-func GenerateDeviceEncryptedPatchStorageKey(appID string, releaseID int, patchNumber int, platform, arch, patchHash, deviceIDHash, keyID string) string {
-	return fmt.Sprintf("apps/%s/releases/%d/patches/%d/%s/%s/encrypted/%s/%s/%s.aesgcm", appID, releaseID, patchNumber, platform, arch, deviceIDHash, keyID, patchHash)
+func GenerateDeviceEncryptedPatchStorageKey(appID string, releaseID int, patchNumber int, platform, arch, patchHash, transportHash, deviceIDHash, keyID string) string {
+	return fmt.Sprintf("apps/%s/releases/%d/patches/%d/%s/%s/encrypted/%s/%s/%s/%s.aesgcm", appID, releaseID, patchNumber, platform, arch, deviceIDHash, keyID, patchHash, transportHash)
 }

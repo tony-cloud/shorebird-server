@@ -994,6 +994,8 @@ components:
           type: string
         size:
           type: integer
+          minimum: 1
+          maximum: 2147483648
         filename:
           type: string
         can_sideload:
@@ -1005,6 +1007,10 @@ components:
       type: object
       additionalProperties: true
       properties:
+        url:
+          type: string
+          format: uri
+          description: Storage-issued private download URL valid for 30 minutes.
         signing:
           $ref: '#/components/schemas/ArtifactSigning'
     ArtifactSigning:
@@ -1051,6 +1057,8 @@ components:
           type: string
         size:
           type: integer
+          minimum: 1
+          maximum: 2147483648
         hash_signature:
           type: string
         podfile_lock_hash:

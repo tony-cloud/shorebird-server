@@ -7,8 +7,9 @@ type Config struct {
 	// Type is "local" or "s3". Empty defaults to "local".
 	Type string
 
-	// Local settings
-	LocalDir      string
+	// Local filesystem settings
+	LocalDir string
+	// ServerBaseURL and UploadSecret configure the multipart facade for both backends.
 	ServerBaseURL string
 	UploadSecret  string
 
@@ -28,6 +29,7 @@ func NewStore(cfg Config) (Store, error) {
 		return NewS3Store(
 			cfg.S3Endpoint, cfg.S3AccessKey, cfg.S3SecretKey,
 			cfg.S3ReleaseBucket, cfg.S3PatchBucket, cfg.S3UseSSL,
+			UploadProxyConfig{BaseURL: cfg.ServerBaseURL, Secret: cfg.UploadSecret},
 		)
 	default:
 		if cfg.Type != "" && cfg.Type != "local" {
