@@ -17,8 +17,8 @@ import (
 
 // LocalStore implements Store using the local filesystem.
 // Release artifacts go under <baseDir>/releases/; patch artifacts
-// under <baseDir>/patches/ (publicly served by the built-in upload
-// handler — no presigned URLs needed).
+// under <baseDir>/patches/. Both namespaces require expiring download grants.
+// Original patches use the private releases namespace; patches holds ciphertext.
 type LocalStore struct {
 	baseDir string
 	// serverBaseURL is the external URL of this server (e.g. http://localhost:8080).

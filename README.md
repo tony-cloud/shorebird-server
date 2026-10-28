@@ -97,13 +97,31 @@ file size (positive, at most 2 GiB). Changing a grant is rejected. A stream that
 is shorter or longer than its declared size is rejected before a complete
 object can be published. Local storage publishes completed uploads atomically.
 
-### Private release artifact downloads
+### Private artifact downloads
 
 Authenticated artifact listings issue 30-minute read URLs through the configured
-storage backend. Local release downloads require a scope/object-bound token;
-S3 downloads use the private release bucket's presigned GET URL. Upload grants
-cannot authorize downloads, and the API storage proxy does not expose private
-S3 objects. Public patch-download behavior is unchanged.
+storage backend. New release and original patch objects use the private release
+namespace/bucket. Patch checks issue short-lived presigned URLs, which ordinary
+updaters can download without account credentials. Local downloads in either
+namespace require a scope/object-bound token; S3 uses presigned GET URLs. Upload
+grants cannot authorize downloads. Encrypted delivery caches ciphertext in the
+patch namespace, and its download also requires an expiring grant.
+
+Both S3 buckets must deny anonymous access; the bundled MinIO setup enforces
+this. For an existing installation that previously stored original patches in
+the public patch bucket/namespace, copy each original object (preserving its key)
+into the private release bucket/namespace and verify its bytes before retiring
+the old public copy and policy. Encrypted cache objects can remain in the patch
+bucket. The server does not delete or migrate existing cloud data automatically
+and does not fall back to an exposed original if the private object is missing.
+
+### Network diagnostics
+
+The CLI's existing GCP-named diagnostic API uses this server's own origin.
+Authenticated requests issue five-minute operation-bound transfer URLs. The
+upload endpoint discards exactly one 5,000,000-byte multipart file and returns
+204; the download endpoint streams exactly 16,000,000 bytes. Transfer endpoints
+require their signed grant, consume bounded data, and do not store probe files.
 
 ### Managed patch signing
 
@@ -165,15 +183,17 @@ context. Version 2 authenticated data also includes SHA-256 of the actual
 compressed/diff transport bytes. Reuploading different transport for the same
 final installed hash derives a different AES key, nonce, and cache object.
 Cached ciphertext is checked against its deterministic expected bytes before
-reuse, and local writes publish atomically.
+reuse, and local writes publish atomically. Whole-message encrypted transport is
+limited to 128 MiB of plaintext (plus the 16-byte authentication tag); larger
+patches require a future chunked authenticated format. Release archive uploads
+retain their separate 2 GiB limit.
 
-Secure client key provisioning and a compatible decrypting installation path
-must be supplied separately. This server does not provide a key provisioning
-endpoint; a generated or overridden device id is not a decryption secret.
-The stock updater cannot use this delivery format. Protect the storage origin
-as well: original patch objects remain in storage, and the default local
-storage route and public S3 patch bucket expose those objects. This capability
-gate alone does not establish end-to-end artifact confidentiality.
+Clients must provision a compatible app-owned decryption key before advertising
+this capability. This server does not provide a key provisioning endpoint; a
+generated or overridden device id is not a decryption secret. The nonce-bound
+managed response signature includes all encryption metadata, preventing altered
+key identifiers, associated data, and ciphertext hashes from being accepted.
+Original patch objects remain private as described above.
 
 ### Account Security and SSO
 
@@ -316,7 +336,7 @@ See `.env.example` for all available configuration options.
 │  ┌──────────────────────────────────────────────────┐ │
 │  │         Local FS / MinIO (S3-compatible)          │ │
 │  │  shorebird-releases (private)                     │ │
-│  │  shorebird-patches (public)                       │ │
+│  │  shorebird-patches (private ciphertext)                       │ │
 │  └──────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────┘
         ▲

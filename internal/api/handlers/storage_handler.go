@@ -116,15 +116,13 @@ func (h *StorageHandler) Download(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusNotFound, "Unknown storage scope", nil)
 		return
 	}
-	if scope == "releases" {
-		validator, ok := h.store.(interface {
-			ValidateDownloadToken(scope, objectKey, token string, expires int64) bool
-		})
-		expires, _ := strconv.ParseInt(r.URL.Query().Get("expires"), 10, 64)
-		if !ok || !validator.ValidateDownloadToken(scope, key, r.URL.Query().Get("token"), expires) {
-			respondError(w, http.StatusForbidden, "Invalid or expired download URL", nil)
-			return
-		}
+	validator, ok := h.store.(interface {
+		ValidateDownloadToken(scope, objectKey, token string, expires int64) bool
+	})
+	expires, _ := strconv.ParseInt(r.URL.Query().Get("expires"), 10, 64)
+	if !ok || !validator.ValidateDownloadToken(scope, key, r.URL.Query().Get("token"), expires) {
+		respondError(w, http.StatusForbidden, "Invalid or expired download URL", nil)
+		return
 	}
 
 	isPublic := scope == "patches"

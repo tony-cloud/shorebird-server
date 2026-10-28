@@ -12,10 +12,11 @@ import (
 )
 
 type signedPatchMetadata struct {
-	Number        int     `json:"number"`
-	Hash          string  `json:"hash"`
-	DownloadURL   string  `json:"download_url"`
-	HashSignature *string `json:"hash_signature"`
+	Number        int                             `json:"number"`
+	Hash          string                          `json:"hash"`
+	DownloadURL   string                          `json:"download_url"`
+	HashSignature *string                         `json:"hash_signature"`
+	Encryption    *models.PatchEncryptionMetadata `json:"encryption,omitempty"`
 }
 type signedPatchCheckPayload struct {
 	Version                int                  `json:"version"`
@@ -73,7 +74,7 @@ func (h *DeviceHandler) respondPatchCheck(w http.ResponseWriter, r *http.Request
 		PatchAvailable: response.PatchAvailable, RolledBackPatchNumbers: response.RolledBackPatchNumbers,
 	}
 	if response.Patch != nil {
-		payload.Patch = &signedPatchMetadata{Number: response.Patch.Number, Hash: response.Patch.Hash, DownloadURL: response.Patch.DownloadURL, HashSignature: response.Patch.HashSignature}
+		payload.Patch = &signedPatchMetadata{Number: response.Patch.Number, Hash: response.Patch.Hash, DownloadURL: response.Patch.DownloadURL, HashSignature: response.Patch.HashSignature, Encryption: response.Patch.Encryption}
 	}
 	serialized, err := json.Marshal(payload)
 	if err != nil {

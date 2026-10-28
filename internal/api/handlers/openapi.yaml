@@ -692,14 +692,71 @@ paths:
       tags: [diagnostics]
       responses:
         '200':
-          description: Upload speed-test URL.
+          description: Five-minute operation-bound upload URL on this server.
   /api/v1/diagnostics/gcp_download:
     get:
       operationId: getGCPDownloadSpeedTestURL
       tags: [diagnostics]
       responses:
         '200':
-          description: Download speed-test URL.
+          description: Five-minute operation-bound download URL on this server.
+  /diagnostics/upload:
+    post:
+      operationId: uploadDiagnosticProbe
+      security: []
+      tags: [diagnostics]
+      description: Requires the signed query parameters issued by gcp_upload. Discards the probe without storing it.
+      parameters:
+        - name: expires
+          in: query
+          required: true
+          schema: {type: integer}
+        - name: token
+          in: query
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Exactly 5000000 bytes.
+      responses:
+        '204':
+          description: Probe consumed.
+        '400':
+          description: Invalid multipart probe or file size.
+        '403':
+          description: Invalid or expired transfer grant.
+  /diagnostics/download:
+    get:
+      operationId: downloadDiagnosticProbe
+      security: []
+      tags: [diagnostics]
+      description: Requires the signed query parameters issued by gcp_download.
+      parameters:
+        - name: expires
+          in: query
+          required: true
+          schema: {type: integer}
+        - name: token
+          in: query
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: Exactly 16000000 probe bytes, with no-store caching policy.
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        '403':
+          description: Invalid or expired transfer grant.
   /api/v1/admin/users:
     get:
       operationId: listAdminUsers

@@ -139,12 +139,12 @@ func (h *PatchHandler) CreatePatchArtifact(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Generate a storage key for the public bucket
+	// Originals stay in the private bucket, including when encrypted delivery
+	// publishes a separate ciphertext object in the patch bucket.
 	filename := "dlc.vmcode" // standard patch artifact name
 	storageKey := storage.GeneratePatchStorageKey(appID, release.ID, patch.Number, platform, arch, filename)
 
-	// Generate presigned upload URL (public bucket)
-	uploadURL, err := h.Storage.GeneratePresignedUploadURL(r.Context(), storageKey, true, 30*time.Minute, size)
+	uploadURL, err := h.Storage.GeneratePresignedUploadURL(r.Context(), storageKey, false, 30*time.Minute, size)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "Failed to generate upload URL", strPtr(err.Error()))
 		return

@@ -95,8 +95,11 @@ func (f *apiFixture) registerBaseline(t *testing.T, signing string) {
 	}
 }
 func (f *apiFixture) registerManagedPatch(t *testing.T, hash string) models.CreatePatchArtifactResponse {
+	return f.registerManagedPatchWithSize(t, hash, 5)
+}
+func (f *apiFixture) registerManagedPatchWithSize(t *testing.T, hash string, size int) models.CreatePatchArtifactResponse {
 	t.Helper()
-	status, data := f.multipart(t, fmt.Sprintf("/api/v1/apps/%s/patches/%d/artifacts", f.app.ID, f.patch.ID), f.owner, map[string]string{"arch": "aarch64", "platform": "ios", "hash": hash, "size": "5"})
+	status, data := f.multipart(t, fmt.Sprintf("/api/v1/apps/%s/patches/%d/artifacts", f.app.ID, f.patch.ID), f.owner, map[string]string{"arch": "aarch64", "platform": "ios", "hash": hash, "size": fmt.Sprint(size)})
 	if status != 201 {
 		t.Fatalf("patch registration %d %s", status, data)
 	}
@@ -485,6 +488,9 @@ func TestAuthenticatedPatchCheckHTTPCoversDeliveryAndRollbackWithNonce(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !strings.HasPrefix(upload.Path, "/storage/upload/releases/") {
+		t.Fatalf("original patch was offered a public-bucket upload: %s", upload.Path)
+	}
 	status, data := f.request(t, "POST", upload.RequestURI(), "", "application/octet-stream", "patch")
 	if status != 200 {
 		t.Fatalf("upload %d %s", status, data)
@@ -548,9 +554,23 @@ func TestAuthenticatedPatchCheckHTTPCoversDeliveryAndRollbackWithNonce(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !strings.HasPrefix(download.Path, "/storage/dl/releases/") || download.Query().Get("token") == "" {
+		t.Fatalf("original patch download was not private and expiring: %s", download.Path)
+	}
 	status, data = f.request(t, "GET", download.RequestURI(), "", "", "")
 	if status != 200 || string(data) != "patch" {
 		t.Fatalf("download %d %s", status, data)
+	}
+	unsigned := *download
+	unsigned.RawQuery = ""
+	status, _ = f.request(t, "GET", unsigned.RequestURI(), "", "", "")
+	if status != http.StatusForbidden {
+		t.Fatalf("original patch accepted anonymous access: %d", status)
+	}
+	unsigned.Path = strings.Replace(unsigned.Path, "/storage/dl/releases/", "/storage/dl/patches/", 1)
+	status, _ = f.request(t, "GET", unsigned.RequestURI(), "", "", "")
+	if status != http.StatusForbidden {
+		t.Fatalf("legacy public patch route accepted anonymous access: %d", status)
 	}
 	rollbackPath := fmt.Sprintf("/api/v1/apps/%s/releases/%d/patches/%d/rollback", f.app.ID, f.release.ID, f.patch.ID)
 	status, data = f.request(t, "POST", rollbackPath, f.owner, "", "")

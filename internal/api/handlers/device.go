@@ -320,22 +320,3 @@ func (h *DeviceHandler) RollbackPatch(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusNoContent)
 }
-
-// --- Diagnostics (optional stubs) ---
-
-// DiagnosticsHandler handles diagnostics/speed test endpoints.
-type DiagnosticsHandler struct{}
-
-// GCPUploadSpeedTest handles GET /api/v1/diagnostics/gcp_upload
-func (h *DiagnosticsHandler) GCPUploadSpeedTest(w http.ResponseWriter, r *http.Request) {
-	respondJSON(w, http.StatusOK, map[string]string{
-		"upload_url": "https://example.com/speedtest-upload",
-	})
-}
-
-// GCPDownloadSpeedTest handles GET /api/v1/diagnostics/gcp_download
-func (h *DiagnosticsHandler) GCPDownloadSpeedTest(w http.ResponseWriter, r *http.Request) {
-	respondJSON(w, http.StatusOK, map[string]string{
-		"download_url": "https://example.com/speedtest-download",
-	})
-}

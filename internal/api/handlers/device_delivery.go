@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/shorebird-server/internal/db"
@@ -23,6 +24,10 @@ import (
 const (
 	PatchDeliveryEncryptionOff             = "off"
 	PatchDeliveryEncryptionPerDeviceAESGCM = "per_device_aes_gcm"
+	// AES-GCM currently authenticates a whole transport at once. Larger
+	// patches need a chunked authenticated format rather than unbounded RAM.
+	maxEncryptedPatchTransportBytes int64 = 128 << 20
+	patchGCMTagBytes                int64 = 16
 )
 
 type PatchDeliveryConfig struct {
@@ -66,7 +71,7 @@ func (h *DeviceHandler) maybeEncryptedPatchDelivery(ctx context.Context, appID u
 		return nil, fmt.Errorf("required patch encryption capability is missing")
 	}
 	if !h.shouldEncryptPatchDelivery(req) {
-		downloadURL, err := h.Storage.GeneratePublicDownloadURL(ctx, patch.StorageKey)
+		downloadURL, err := h.Storage.GeneratePresignedDownloadURL(ctx, patch.StorageKey, false, 30*time.Minute)
 		if err != nil {
 			return nil, err
 		}
@@ -76,7 +81,7 @@ func (h *DeviceHandler) maybeEncryptedPatchDelivery(ctx context.Context, appID u
 		return nil, fmt.Errorf("patch delivery encryption is enabled but PATCH_DELIVERY_AES_SECRET is empty")
 	}
 
-	plaintext, err := h.readPatchObject(ctx, patch.StorageKey)
+	plaintext, err := h.readOriginalPatchObject(ctx, patch.StorageKey)
 	if err != nil {
 		return nil, fmt.Errorf("read plaintext patch: %w", err)
 	}
@@ -117,7 +122,7 @@ func (h *DeviceHandler) maybeEncryptedPatchDelivery(ctx context.Context, appID u
 		return nil, fmt.Errorf("write encrypted patch: %w", err)
 	}
 
-	downloadURL, err := h.Storage.GeneratePublicDownloadURL(ctx, cacheKey)
+	downloadURL, err := h.Storage.GeneratePresignedDownloadURL(ctx, cacheKey, true, 30*time.Minute)
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +159,27 @@ func (h *DeviceHandler) readPatchObject(ctx context.Context, objectKey string) (
 		return nil, err
 	}
 	defer reader.Close()
-	return io.ReadAll(reader)
+	return readBoundedPatchBytes(reader, maxEncryptedPatchTransportBytes+patchGCMTagBytes)
+}
+
+func (h *DeviceHandler) readOriginalPatchObject(ctx context.Context, objectKey string) ([]byte, error) {
+	reader, err := h.Storage.GetObject(ctx, objectKey, false)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+	return readBoundedPatchBytes(reader, maxEncryptedPatchTransportBytes)
+}
+
+func readBoundedPatchBytes(reader io.Reader, maximum int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(reader, maximum+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maximum {
+		return nil, fmt.Errorf("encrypted patch transport exceeds %d-byte limit", maximum)
+	}
+	return data, nil
 }
 
 func patchDeliveryAAD(appID uuid.UUID, releaseID int, req models.PatchCheckRequest, patch *db.PatchWithArtifactRow, deviceIDHash, transportHash string) string {

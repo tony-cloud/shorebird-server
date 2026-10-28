@@ -138,7 +138,7 @@ func newPatchCheckFixture(t *testing.T) *patchCheckFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	localStorage, err := storage.NewLocalStore(t.TempDir(), "http://updates.test", "")
+	localStorage, err := storage.NewLocalStore(t.TempDir(), "http://updates.test", "test-only-download-secret")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func (f *patchCheckFixture) createPatch(t *testing.T, number int, offlineExpires
 	storageKey := storage.GeneratePatchStorageKey(f.appID.String(), f.releaseID, number, testPlatform, testArch, "dlc.vmcode")
 	patchBytes := []byte(fmt.Sprintf("patch-%d-plaintext", number))
 	hash := sha256Hex(patchBytes)
-	if err := f.storage.UploadObject(ctx, storageKey, bytes.NewReader(patchBytes), int64(len(patchBytes)), "application/octet-stream", true); err != nil {
+	if err := f.storage.UploadObject(ctx, storageKey, bytes.NewReader(patchBytes), int64(len(patchBytes)), "application/octet-stream", false); err != nil {
 		t.Fatal(err)
 	}
 	expires := offlineExpiresAt.UTC()
@@ -185,6 +185,23 @@ func TestPatchCheckRejectsPlaintextDowngradeWhenEncryptionRequired(t *testing.T)
 	fixture.handler.PatchCheck(response, request)
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "encrypted_patch_capability_required") {
 		t.Fatalf("downgrade accepted: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestEncryptedPatchTransportReadIsBounded(t *testing.T) {
+	for _, size := range []int{15, 16, 17, 100} {
+		reader := bytes.NewReader(bytes.Repeat([]byte{0x42}, size))
+		data, err := readBoundedPatchBytes(reader, 16)
+		if size > 16 {
+			if err == nil || data != nil {
+				t.Fatalf("accepted oversized encrypted transport of size %d", size)
+			}
+			if reader.Size()-int64(reader.Len()) != 17 {
+				t.Fatalf("oversized transport read more than limit+1 bytes: %d", reader.Size()-int64(reader.Len()))
+			}
+		} else if err != nil || len(data) != size {
+			t.Fatalf("valid transport read size=%d error=%v", size, err)
+		}
 	}
 }
 
@@ -367,7 +384,7 @@ func TestEncryptedDeliveryBindsActualTransportAndRepairsInconsistentCache(t *tes
 			// same final installed binary. Reupload without changing its registered hash.
 			secondTransport := []byte("different compressed transport for the same final installed artifact")
 			key := storage.GeneratePatchStorageKey(fixture.appID.String(), fixture.releaseID, 1, testPlatform, testArch, "dlc.vmcode")
-			if err := fixture.storage.UploadObject(context.Background(), key, bytes.NewReader(secondTransport), int64(len(secondTransport)), "application/octet-stream", true); err != nil {
+			if err := fixture.storage.UploadObject(context.Background(), key, bytes.NewReader(secondTransport), int64(len(secondTransport)), "application/octet-stream", false); err != nil {
 				t.Fatal(err)
 			}
 			second := fixture.patchCheck(t, request)

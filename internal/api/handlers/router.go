@@ -49,7 +49,7 @@ func NewRouter(authService *authpkg.Service, database db.Store, store storage.St
 	patchHandler := &PatchHandler{DB: database, Storage: store, Signing: signingHandler}
 	metricsHandler := &MetricsHandler{DB: database}
 	deviceHandler := &DeviceHandler{DB: database, Storage: store, PatchDelivery: patchDelivery, Signing: signingHandler}
-	diagHandler := &DiagnosticsHandler{}
+	diagHandler := newDiagnosticsHandler(baseURL)
 	adminHandler := &AdminHandler{DB: database}
 	storageHandler := NewStorageHandler(store)
 
@@ -58,6 +58,9 @@ func NewRouter(authService *authpkg.Service, database db.Store, store storage.St
 
 	r.Get("/openapi.yaml", serveOpenAPISpec)
 	r.Get("/api/v1/openapi.yaml", serveOpenAPISpec)
+	// Short-lived transfer grants are issued only by the authenticated API.
+	r.Post("/diagnostics/upload", diagHandler.Upload)
+	r.Get("/diagnostics/download", diagHandler.Download)
 
 	// --- Local storage upload/download (used when STORAGE_DRIVER=local) ---
 	r.Route("/storage", func(r chi.Router) {

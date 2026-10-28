@@ -57,10 +57,12 @@ services:
         condition: service_healthy
     entrypoint: >
       /bin/sh -c "
+      set -eu;
       mc alias set local http://minio:9000 minioadmin minioadmin;
       mc mb --ignore-existing local/shorebird-releases;
       mc mb --ignore-existing local/shorebird-patches;
-      mc anonymous set public local/shorebird-patches;
+      mc anonymous set none local/shorebird-releases;
+      mc anonymous set none local/shorebird-patches;
       echo 'MinIO buckets created';
       "
 
