@@ -218,6 +218,18 @@ type PatchEvent struct {
 	Message        *string `json:"message"`
 }
 
+// PatchEventRecord adds persistence metadata to an updater lifecycle event.
+type PatchEventRecord struct {
+	PatchEvent
+	ID        int64     `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type PatchEventListResponse struct {
+	Events       []PatchEventRecord `json:"events"`
+	NextBeforeID *int64             `json:"next_before_id,omitempty"`
+}
+
 // Canonical event identifiers serialized by the native updater.
 const (
 	EventPatchInstallSuccess = "__patch_install__"

@@ -5,8 +5,10 @@ import (
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/shorebird-server/internal/api/middleware"
 	"github.com/shorebird-server/internal/db"
+	"github.com/shorebird-server/internal/models"
 )
 
 // AdminHandler handles admin/management API endpoints.
@@ -81,11 +83,52 @@ func (h *AdminHandler) GetPatchEvents(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAdmin(w, r) {
 		return
 	}
-	// This would query patch_events table for the app
-	// For now, return a stub
-	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"events": []map[string]interface{}{},
-	})
+	appID, err := uuid.Parse(chi.URLParam(r, "appId"))
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid app ID", nil)
+		return
+	}
+	if _, ok := requireAppAccess(w, r, h.DB, appID, false); !ok {
+		return
+	}
+	limit := 100
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		limit, err = strconv.Atoi(raw)
+		if err != nil || limit < 1 || limit > 500 {
+			respondError(w, http.StatusBadRequest, "limit must be between 1 and 500", nil)
+			return
+		}
+	}
+	var beforeID int64
+	if raw := r.URL.Query().Get("before_id"); raw != "" {
+		beforeID, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil || beforeID < 1 {
+			respondError(w, http.StatusBadRequest, "before_id must be a positive integer", nil)
+			return
+		}
+	}
+	events, err := h.DB.ListPatchEvents(r.Context(), appID, beforeID, limit+1)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to fetch patch events", nil)
+		return
+	}
+	response := models.PatchEventListResponse{Events: make([]models.PatchEventRecord, 0, limit)}
+	if len(events) > limit {
+		events = events[:limit]
+		next := events[len(events)-1].ID
+		response.NextBeforeID = &next
+	}
+	for _, event := range events {
+		response.Events = append(response.Events, models.PatchEventRecord{
+			ID: event.ID, CreatedAt: event.CreatedAt.Time,
+			PatchEvent: models.PatchEvent{
+				AppID: event.AppID.String(), ClientID: event.ClientID, Arch: event.Arch,
+				PatchNumber: event.PatchNumber, Platform: event.Platform, ReleaseVersion: event.ReleaseVersion,
+				Type: event.Type, Timestamp: event.Timestamp, Message: event.Message,
+			},
+		})
+	}
+	respondJSON(w, http.StatusOK, response)
 }
 
 // ListUsers handles GET /api/v1/admin/users (admin convenience endpoint)

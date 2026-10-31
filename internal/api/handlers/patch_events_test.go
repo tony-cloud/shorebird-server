@@ -10,10 +10,13 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/shorebird-server/internal/auth"
 	"github.com/shorebird-server/internal/db"
+	"github.com/shorebird-server/internal/models"
 )
 
 func TestPatchEventsAcceptsRuntimeWireFormatAndLegacyAliasesHTTP(t *testing.T) {
@@ -72,11 +75,38 @@ func TestPatchEventsPostgresRuntimeMessageHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { connection.Close(context.Background()) })
-	appID := uuid.New()
+	orgID, err := store.CreateOrganization(t.Context(), "Event test", "team")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := store.CreateApp(t.Context(), orgID, "Event test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	appID := app.ID
+	userID, err := store.CreateUser(t.Context(), uuid.NewString()+"@example.test", "Event admin", "unused")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkUserEmailVerified(t.Context(), userID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetUserAdmin(t.Context(), userID, true); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = connection.Exec(context.Background(), "DELETE FROM users WHERE id = $1", userID)
+		_, _ = connection.Exec(context.Background(), "DELETE FROM organizations WHERE id = $1", orgID)
+	})
 	t.Cleanup(func() {
 		_, _ = connection.Exec(context.Background(), "DELETE FROM patch_events WHERE app_id = $1", appID)
 	})
-	server := httptest.NewServer(NewRouter(nil, store, nil, nil, "", PatchDeliveryConfig{}))
+	service := auth.NewService("event-test-secret", time.Hour)
+	token, err := service.GenerateToken(userID, "event-admin@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(NewRouter(service, store, nil, nil, "", PatchDeliveryConfig{}))
 	t.Cleanup(server.Close)
 	f := &apiFixture{server: server}
 	for _, eventType := range []string{"__patch_install__", "__patch_install_failure__", "__patch_download__", "__patch_update_failure__"} {
@@ -106,6 +136,37 @@ func TestPatchEventsPostgresRuntimeMessageHTTP(t *testing.T) {
 			if err := json.Unmarshal([]byte(storedMessage.String), &decoded); err != nil || decoded != message {
 				t.Fatalf("PostgreSQL message = %q, decode error = %v", storedMessage.String, err)
 			}
+		}
+	}
+	path := "/api/v1/admin/apps/" + appID.String() + "/events?limit=2"
+	var previousID int64
+	for page := 0; page < 2; page++ {
+		status, body := f.request(t, http.MethodGet, path, token, "", "")
+		if status != http.StatusOK {
+			t.Fatalf("PostgreSQL event list: %d %s", status, body)
+		}
+		var response models.PatchEventListResponse
+		if err := json.Unmarshal(body, &response); err != nil {
+			t.Fatal(err)
+		}
+		if len(response.Events) != 2 || (response.NextBeforeID != nil) != (page == 0) {
+			t.Fatalf("PostgreSQL event page = %+v", response)
+		}
+		for _, event := range response.Events {
+			if event.AppID != appID.String() || event.CreatedAt.IsZero() || (previousID != 0 && event.ID >= previousID) {
+				t.Fatalf("incorrect PostgreSQL event: %+v", event)
+			}
+			if strings.Contains(event.Type, "failure") {
+				if event.Message == nil || *event.Message != `engine_report: patch 1 failed to launch ("diagnostic")` {
+					t.Fatalf("message was not decoded from JSONB: %+v", event)
+				}
+			} else if event.Message != nil {
+				t.Fatalf("null message changed: %+v", event)
+			}
+			previousID = event.ID
+		}
+		if response.NextBeforeID != nil {
+			path += fmt.Sprintf("&before_id=%d", *response.NextBeforeID)
 		}
 	}
 }

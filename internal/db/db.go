@@ -691,6 +691,27 @@ func (db *PgStore) InsertPatchEvent(ctx context.Context, appID uuid.UUID, client
 	return err
 }
 
+// ListPatchEvents returns one app's newest events before an exclusive ID cursor.
+func (db *PgStore) ListPatchEvents(ctx context.Context, appID uuid.UUID, beforeID int64, limit int) ([]PatchEventRow, error) {
+	rows, err := db.query(ctx,
+		`SELECT id, app_id, client_id, arch, patch_number, platform, release_version, event_type, timestamp, message #>> '{}', created_at
+		 FROM patch_events WHERE app_id = $1 AND ($2::bigint = 0 OR id < $2) ORDER BY id DESC LIMIT $3`,
+		appID, beforeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []PatchEventRow
+	for rows.Next() {
+		var event PatchEventRow
+		if err := rows.Scan(&event.ID, &event.AppID, &event.ClientID, &event.Arch, &event.PatchNumber, &event.Platform, &event.ReleaseVersion, &event.Type, &event.Timestamp, &event.Message, &event.CreatedAt); err != nil {
+			return nil, err
+		}
+		result = append(result, event)
+	}
+	return result, rows.Err()
+}
+
 // ListPatchEventActivity returns recent device activity timestamps for an app.
 func (db *PgStore) ListPatchEventActivity(ctx context.Context, appID uuid.UUID, sinceSeconds, sinceMillis int64) ([]PatchEventActivityRow, error) {
 	rows, err := db.query(ctx,

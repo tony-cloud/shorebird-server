@@ -157,6 +157,7 @@ type Store interface {
 
 	// --- Patch Events ---
 	InsertPatchEvent(ctx context.Context, appID uuid.UUID, clientID, arch, platform, releaseVersion, eventType string, patchNumber int, timestamp int64, message *string) error
+	ListPatchEvents(ctx context.Context, appID uuid.UUID, beforeID int64, limit int) ([]PatchEventRow, error)
 	ListPatchEventActivity(ctx context.Context, appID uuid.UUID, sinceSeconds, sinceMillis int64) ([]PatchEventActivityRow, error)
 
 	// --- Rollbacks ---
@@ -336,6 +337,21 @@ type AccountTokenRow struct {
 	ExpiresAt ShorebirdTime
 	UsedAt    NullShorebirdTime
 	CreatedAt ShorebirdTime
+}
+
+// PatchEventRow contains a persisted event for the administrative event list.
+type PatchEventRow struct {
+	ID             int64
+	AppID          uuid.UUID
+	ClientID       string
+	Arch           string
+	PatchNumber    int
+	Platform       string
+	ReleaseVersion string
+	Type           string
+	Timestamp      int64
+	Message        *string
+	CreatedAt      ShorebirdTime
 }
 
 // PatchEventActivityRow is the minimal activity data needed for metrics.

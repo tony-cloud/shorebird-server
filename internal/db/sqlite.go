@@ -558,6 +558,23 @@ func (s *SqliteStore) InsertPatchEvent(ctx context.Context, appID uuid.UUID, cli
 	_, err := s.db.ExecContext(ctx, `INSERT INTO patch_events (app_id, client_id, arch, patch_number, platform, release_version, event_type, timestamp, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, appID.String(), clientID, arch, patchNumber, platform, releaseVersion, eventType, timestamp, message)
 	return err
 }
+func (s *SqliteStore) ListPatchEvents(ctx context.Context, appID uuid.UUID, beforeID int64, limit int) ([]PatchEventRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, app_id, client_id, arch, patch_number, platform, release_version, event_type, timestamp, message, created_at FROM patch_events WHERE app_id = ? AND (? = 0 OR id < ?) ORDER BY id DESC LIMIT ?`, appID.String(), beforeID, beforeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []PatchEventRow
+	for rows.Next() {
+		var event PatchEventRow
+		if err := rows.Scan(&event.ID, &event.AppID, &event.ClientID, &event.Arch, &event.PatchNumber, &event.Platform, &event.ReleaseVersion, &event.Type, &event.Timestamp, &event.Message, &event.CreatedAt); err != nil {
+			return nil, err
+		}
+		result = append(result, event)
+	}
+	return result, rows.Err()
+}
+
 func (s *SqliteStore) ListPatchEventActivity(ctx context.Context, appID uuid.UUID, sinceSeconds, sinceMillis int64) ([]PatchEventActivityRow, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT client_id, timestamp, platform, release_version, patch_number FROM patch_events WHERE app_id = ? AND client_id <> '' AND ((timestamp < 1000000000000 AND timestamp >= ?) OR (timestamp >= 1000000000000 AND timestamp >= ?))`, appID.String(), sinceSeconds, sinceMillis)
 	if err != nil {

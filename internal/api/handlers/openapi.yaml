@@ -157,7 +157,16 @@ paths:
           application/json:
             schema:
               type: object
-              additionalProperties: true
+              required: [event]
+              properties:
+                event:
+                  allOf:
+                    - $ref: '#/components/schemas/PatchEvent'
+                    - type: object
+                      properties:
+                        type:
+                          type: string
+                          enum: [__patch_install__, __patch_install_failure__, __patch_download__, __patch_update_failure__, PatchInstallSuccess, PatchInstallFailure]
       responses:
         '204':
           description: Event accepted.
@@ -847,11 +856,46 @@ paths:
     get:
       operationId: getPatchEvents
       tags: [admin]
+      description: Server administrators can read one app's recorded events, newest ID first.
       parameters:
         - $ref: '#/components/parameters/AppId'
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+        - name: before_id
+          in: query
+          description: Exclusive event ID cursor returned as next_before_id by the preceding page.
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
       responses:
         '200':
           description: Patch event list.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events]
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PatchEventRecord'
+                  next_before_id:
+                    type: integer
+                    format: int64
+                    description: Present when another page exists.
+        '400':
+          description: Invalid app ID, limit, or cursor.
+        '403':
+          description: Server administrator access required.
+        '404':
+          description: App not found.
 components:
   securitySchemes:
     bearerAuth:
@@ -891,6 +935,44 @@ components:
       schema:
         type: integer
   schemas:
+    PatchEvent:
+      type: object
+      required: [app_id, type]
+      properties:
+        app_id:
+          type: string
+          format: uuid
+        arch:
+          type: string
+        client_id:
+          type: string
+        type:
+          type: string
+          description: Native lifecycle event identifier, legacy identifier, or server-recorded PatchCheck activity.
+        patch_number:
+          type: integer
+        platform:
+          type: string
+        release_version:
+          type: string
+        timestamp:
+          type: integer
+          format: int64
+          description: Client timestamp, normally Unix seconds; legacy millisecond values are retained.
+        message:
+          type: [string, 'null']
+    PatchEventRecord:
+      allOf:
+        - $ref: '#/components/schemas/PatchEvent'
+        - type: object
+          required: [id, created_at]
+          properties:
+            id:
+              type: integer
+              format: int64
+            created_at:
+              type: string
+              format: date-time
     ErrorResponse:
       type: object
       required: [message]

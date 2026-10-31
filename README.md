@@ -132,6 +132,17 @@ upload endpoint discards exactly one 5,000,000-byte multipart file and returns
 204; the download endpoint streams exactly 16,000,000 bytes. Transfer endpoints
 require their signed grant, consume bounded data, and do not store probe files.
 
+### Patch lifecycle events
+
+The public `/api/v1/patches/events` endpoint accepts the native updater's install
+success, install failure, download, and update failure identifiers. The legacy
+`PatchInstallSuccess` and `PatchInstallFailure` aliases are normalized on insert.
+Server administrators can read recorded events for an existing app at
+`/api/v1/admin/apps/{appId}/events`. Results contain the event fields plus `id`
+and `created_at`, newest ID first. `limit` defaults to 100 and accepts 1–500;
+pass a returned `next_before_id` as `before_id` to request the next page.
+Organization membership alone does not grant access to this administrative route.
+
 ### Managed patch signing
 
 The CLI's default signing mode requires a separately provisioned wrapping key:
