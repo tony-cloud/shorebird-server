@@ -13,6 +13,8 @@ no Postgres, no MinIO needed.
 - Go 1.26.10 or Go 1.27.3, or a later security-patched supported release.
   Deployment builds must include current Go security fixes; the `go.mod`
   language version does not enforce a secure compiler or standard library.
+  The module selects Go 1.26.10 for automatic toolchain builds; any explicit
+  `GOTOOLCHAIN` override must still meet these deployment minimums.
 
 ### 1. Build and run
 
