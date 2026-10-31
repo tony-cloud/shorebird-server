@@ -207,15 +207,17 @@ type CreatePatchEventRequest struct {
 
 // PatchEvent represents a single patch lifecycle event.
 type PatchEvent struct {
-	AppID          string  `json:"app_id"`
-	ClientID       string  `json:"client_id"`
-	Arch           string  `json:"arch"`
-	PatchNumber    int     `json:"patch_number"`
-	Platform       string  `json:"platform"`
-	ReleaseVersion string  `json:"release_version"`
-	Type           string  `json:"type"`
-	Timestamp      int64   `json:"timestamp"`
-	Message        *string `json:"message"`
+	AppID           string  `json:"app_id"`
+	ClientID        string  `json:"client_id"`
+	Arch            string  `json:"arch"`
+	PatchNumber     int     `json:"patch_number"`
+	Platform        string  `json:"platform"`
+	ReleaseVersion  string  `json:"release_version"`
+	Type            string  `json:"type"`
+	Timestamp       int64   `json:"timestamp"`
+	Message         *string `json:"message"`
+	EventID         *string `json:"event_id,omitempty"`
+	FailureCategory *string `json:"failure_category,omitempty"`
 }
 
 // PatchEventRecord adds persistence metadata to an updater lifecycle event.

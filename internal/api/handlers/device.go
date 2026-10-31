@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -228,7 +229,12 @@ func (h *DeviceHandler) recordPatchCheckActivity(r *http.Request, appID uuid.UUI
 // No authentication required.
 func (h *DeviceHandler) PatchEvents(w http.ResponseWriter, r *http.Request) {
 	var req models.CreatePatchEventRequest
-	if err := decodeJSON(r, &req); err != nil {
+	if err := decodePatchEventRequest(w, r, &req); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			respondError(w, http.StatusRequestEntityTooLarge, "Event request exceeds 256 KiB", nil)
+			return
+		}
 		respondError(w, http.StatusBadRequest, "Invalid request body", nil)
 		return
 	}
@@ -252,6 +258,10 @@ func (h *DeviceHandler) PatchEvents(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "Invalid event type", nil)
 		return
 	}
+	if err := validatePatchEventFields(&req.Event); err != nil {
+		respondError(w, http.StatusBadRequest, err.Error(), nil)
+		return
+	}
 
 	if err := h.DB.InsertPatchEvent(r.Context(),
 		appID,
@@ -263,6 +273,7 @@ func (h *DeviceHandler) PatchEvents(w http.ResponseWriter, r *http.Request) {
 		req.Event.PatchNumber,
 		req.Event.Timestamp,
 		req.Event.Message,
+		&db.PatchEventMetadata{EventID: req.Event.EventID, FailureCategory: req.Event.FailureCategory},
 	); err != nil {
 		respondError(w, http.StatusInternalServerError, "Failed to record event", nil)
 		return

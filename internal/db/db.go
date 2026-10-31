@@ -672,7 +672,7 @@ func (db *PgStore) CreatePatchArtifact(ctx context.Context, patchID int, arch, p
 // --- Patch events ---
 
 // InsertPatchEvent records a patch lifecycle event.
-func (db *PgStore) InsertPatchEvent(ctx context.Context, appID uuid.UUID, clientID, arch, platform, releaseVersion, eventType string, patchNumber int, timestamp int64, message *string) error {
+func (db *PgStore) InsertPatchEvent(ctx context.Context, appID uuid.UUID, clientID, arch, platform, releaseVersion, eventType string, patchNumber int, timestamp int64, message *string, metadata ...*PatchEventMetadata) error {
 	// PostgreSQL stores messages as JSONB. A raw Go string is treated by pgx
 	// as already-encoded JSON, so encode the message as a JSON string first.
 	// Preserve SQL NULL for events without a message.
@@ -684,17 +684,24 @@ func (db *PgStore) InsertPatchEvent(ctx context.Context, appID uuid.UUID, client
 		}
 		messageJSON = encoded
 	}
+	var fields PatchEventMetadata
+	if len(metadata) > 0 && metadata[0] != nil {
+		fields = *metadata[0]
+	}
+	// The partial unique index deduplicates retries atomically. NULL event IDs
+	// never conflict, preserving every event from legacy clients.
 	_, err := db.exec(ctx,
-		`INSERT INTO patch_events (app_id, client_id, arch, patch_number, platform, release_version, event_type, timestamp, message)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		appID, clientID, arch, patchNumber, platform, releaseVersion, eventType, timestamp, messageJSON)
+		`INSERT INTO patch_events (app_id, client_id, arch, patch_number, platform, release_version, event_type, timestamp, message, event_id, failure_category)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		 ON CONFLICT (app_id, client_id, event_id) WHERE event_id IS NOT NULL DO NOTHING`,
+		appID, clientID, arch, patchNumber, platform, releaseVersion, eventType, timestamp, messageJSON, fields.EventID, fields.FailureCategory)
 	return err
 }
 
 // ListPatchEvents returns one app's newest events before an exclusive ID cursor.
 func (db *PgStore) ListPatchEvents(ctx context.Context, appID uuid.UUID, beforeID int64, limit int) ([]PatchEventRow, error) {
 	rows, err := db.query(ctx,
-		`SELECT id, app_id, client_id, arch, patch_number, platform, release_version, event_type, timestamp, message #>> '{}', created_at
+		`SELECT id, app_id, client_id, arch, patch_number, platform, release_version, event_type, timestamp, message #>> '{}', created_at, event_id::text, failure_category
 		 FROM patch_events WHERE app_id = $1 AND ($2::bigint = 0 OR id < $2) ORDER BY id DESC LIMIT $3`,
 		appID, beforeID, limit)
 	if err != nil {
@@ -704,7 +711,7 @@ func (db *PgStore) ListPatchEvents(ctx context.Context, appID uuid.UUID, beforeI
 	var result []PatchEventRow
 	for rows.Next() {
 		var event PatchEventRow
-		if err := rows.Scan(&event.ID, &event.AppID, &event.ClientID, &event.Arch, &event.PatchNumber, &event.Platform, &event.ReleaseVersion, &event.Type, &event.Timestamp, &event.Message, &event.CreatedAt); err != nil {
+		if err := rows.Scan(&event.ID, &event.AppID, &event.ClientID, &event.Arch, &event.PatchNumber, &event.Platform, &event.ReleaseVersion, &event.Type, &event.Timestamp, &event.Message, &event.CreatedAt, &event.EventID, &event.FailureCategory); err != nil {
 			return nil, err
 		}
 		result = append(result, event)

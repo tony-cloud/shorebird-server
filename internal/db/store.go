@@ -156,7 +156,7 @@ type Store interface {
 	CreatePatchArtifact(ctx context.Context, patchID int, arch, platform, hash, storageKey string, size int64, hashSignature, podfileLockHash *string, offlineExpiresAt *time.Time) (*PatchArtifactRow, error)
 
 	// --- Patch Events ---
-	InsertPatchEvent(ctx context.Context, appID uuid.UUID, clientID, arch, platform, releaseVersion, eventType string, patchNumber int, timestamp int64, message *string) error
+	InsertPatchEvent(ctx context.Context, appID uuid.UUID, clientID, arch, platform, releaseVersion, eventType string, patchNumber int, timestamp int64, message *string, metadata ...*PatchEventMetadata) error
 	ListPatchEvents(ctx context.Context, appID uuid.UUID, beforeID int64, limit int) ([]PatchEventRow, error)
 	ListPatchEventActivity(ctx context.Context, appID uuid.UUID, sinceSeconds, sinceMillis int64) ([]PatchEventActivityRow, error)
 
@@ -339,8 +339,15 @@ type AccountTokenRow struct {
 	CreatedAt ShorebirdTime
 }
 
+// PatchEventMetadata is optional for events queued by older updater versions.
+type PatchEventMetadata struct {
+	EventID         *string
+	FailureCategory *string
+}
+
 // PatchEventRow contains a persisted event for the administrative event list.
 type PatchEventRow struct {
+	PatchEventMetadata
 	ID             int64
 	AppID          uuid.UUID
 	ClientID       string

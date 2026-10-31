@@ -554,12 +554,16 @@ func (s *SqliteStore) CreatePatchArtifact(ctx context.Context, patchID int, arch
 }
 
 // --- Patch Events ---
-func (s *SqliteStore) InsertPatchEvent(ctx context.Context, appID uuid.UUID, clientID, arch, platform, releaseVersion, eventType string, patchNumber int, timestamp int64, message *string) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO patch_events (app_id, client_id, arch, patch_number, platform, release_version, event_type, timestamp, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, appID.String(), clientID, arch, patchNumber, platform, releaseVersion, eventType, timestamp, message)
+func (s *SqliteStore) InsertPatchEvent(ctx context.Context, appID uuid.UUID, clientID, arch, platform, releaseVersion, eventType string, patchNumber int, timestamp int64, message *string, metadata ...*PatchEventMetadata) error {
+	var fields PatchEventMetadata
+	if len(metadata) > 0 && metadata[0] != nil {
+		fields = *metadata[0]
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO patch_events (app_id, client_id, arch, patch_number, platform, release_version, event_type, timestamp, message, event_id, failure_category) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (app_id, client_id, event_id) WHERE event_id IS NOT NULL DO NOTHING`, appID.String(), clientID, arch, patchNumber, platform, releaseVersion, eventType, timestamp, message, fields.EventID, fields.FailureCategory)
 	return err
 }
 func (s *SqliteStore) ListPatchEvents(ctx context.Context, appID uuid.UUID, beforeID int64, limit int) ([]PatchEventRow, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, app_id, client_id, arch, patch_number, platform, release_version, event_type, timestamp, message, created_at FROM patch_events WHERE app_id = ? AND (? = 0 OR id < ?) ORDER BY id DESC LIMIT ?`, appID.String(), beforeID, beforeID, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, app_id, client_id, arch, patch_number, platform, release_version, event_type, timestamp, message, created_at, event_id, failure_category FROM patch_events WHERE app_id = ? AND (? = 0 OR id < ?) ORDER BY id DESC LIMIT ?`, appID.String(), beforeID, beforeID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -567,7 +571,7 @@ func (s *SqliteStore) ListPatchEvents(ctx context.Context, appID uuid.UUID, befo
 	var result []PatchEventRow
 	for rows.Next() {
 		var event PatchEventRow
-		if err := rows.Scan(&event.ID, &event.AppID, &event.ClientID, &event.Arch, &event.PatchNumber, &event.Platform, &event.ReleaseVersion, &event.Type, &event.Timestamp, &event.Message, &event.CreatedAt); err != nil {
+		if err := rows.Scan(&event.ID, &event.AppID, &event.ClientID, &event.Arch, &event.PatchNumber, &event.Platform, &event.ReleaseVersion, &event.Type, &event.Timestamp, &event.Message, &event.CreatedAt, &event.EventID, &event.FailureCategory); err != nil {
 			return nil, err
 		}
 		result = append(result, event)
@@ -703,6 +707,8 @@ func (s *SqliteStore) migrate(ctx context.Context) error {
 		`ALTER TABLE patch_artifacts ADD COLUMN offline_expires_at TEXT`,
 		`ALTER TABLE release_artifacts ADD COLUMN signing_mode TEXT`,
 		`ALTER TABLE release_artifacts ADD COLUMN signing_key_id INTEGER REFERENCES managed_signing_keys(id)`,
+		`ALTER TABLE patch_events ADD COLUMN event_id TEXT`,
+		`ALTER TABLE patch_events ADD COLUMN failure_category TEXT`,
 	}
 	for _, stmt := range alter {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
@@ -710,6 +716,7 @@ func (s *SqliteStore) migrate(ctx context.Context) error {
 		}
 	}
 	_, err = s.db.ExecContext(ctx, `
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_patch_events_event_id ON patch_events (app_id, client_id, event_id) WHERE event_id IS NOT NULL;
 		UPDATE users SET email_verified = 1 WHERE email_verified IS NULL;
 		UPDATE users SET is_admin = 1 WHERE id = (SELECT MIN(id) FROM users) AND NOT EXISTS (SELECT 1 FROM users WHERE is_admin = 1);
 		INSERT OR IGNORE INTO settings (key, value) VALUES

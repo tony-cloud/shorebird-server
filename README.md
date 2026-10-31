@@ -137,11 +137,26 @@ require their signed grant, consume bounded data, and do not store probe files.
 The public `/api/v1/patches/events` endpoint accepts the native updater's install
 success, install failure, download, and update failure identifiers. The legacy
 `PatchInstallSuccess` and `PatchInstallFailure` aliases are normalized on insert.
+Optional `event_id` UUIDs and `failure_category` identifiers are retained and
+included in event history. Retries with the same app, client, and event UUID
+return 204 without adding another row. The first valid payload wins, including
+when a later retry changes its contents; existing events are never overwritten.
+Missing or null event IDs preserve every legacy event as a separate row.
+Category identifiers accept 1–128 ASCII letters, digits, underscores, periods,
+or hyphens, including future updater categories. Requests are capped at 256 KiB;
+messages at 32 KiB, client IDs at 256 bytes, architecture/platform at 64 bytes,
+and release versions at 1,024 bytes. IDs require a nonempty client ID.
+
 Server administrators can read recorded events for an existing app at
 `/api/v1/admin/apps/{appId}/events`. Results contain the event fields plus `id`
 and `created_at`, newest ID first. `limit` defaults to 100 and accepts 1–500;
 pass a returned `next_before_id` as `before_id` to request the next page.
 Organization membership alone does not grant access to this administrative route.
+
+SQLite adds the nullable metadata columns and deduplication index on startup,
+preserving existing rows. PostgreSQL deployments must apply
+`internal/db/migrations/004_patch_event_metadata.sql` after migration 003 and
+before running this server version, using the existing Goose migration workflow.
 
 ### Managed patch signing
 

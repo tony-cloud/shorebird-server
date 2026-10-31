@@ -153,6 +153,7 @@ paths:
       tags: [devices]
       requestBody:
         required: true
+        description: One event envelope, at most 256 KiB including any trailing whitespace.
         content:
           application/json:
             schema:
@@ -169,7 +170,11 @@ paths:
                           enum: [__patch_install__, __patch_install_failure__, __patch_download__, __patch_update_failure__, PatchInstallSuccess, PatchInstallFailure]
       responses:
         '204':
-          description: Event accepted.
+          description: Event accepted, or an event with the same app/client/event UUID was already recorded. The first stored payload is retained.
+        '400':
+          description: Invalid event fields or malformed JSON.
+        '413':
+          description: Event body exceeds 256 KiB.
   /api/v1/users/me:
     get:
       operationId: getCurrentUser
@@ -944,23 +949,43 @@ components:
           format: uuid
         arch:
           type: string
+          maxLength: 64
         client_id:
           type: string
+          maxLength: 256
+          description: Required and nonempty when event_id is present; maximum 256 UTF-8 bytes.
+        event_id:
+          type: [string, 'null']
+          format: uuid
+          minLength: 36
+          maxLength: 36
+          description: Optional nonzero UUID created once by the updater and retained across retries. Normalized to lowercase; deduplication is scoped to app_id plus client_id plus this UUID. Missing/null IDs are never deduplicated.
+        failure_category:
+          type: [string, 'null']
+          pattern: '^[A-Za-z0-9_.-]{1,128}$'
+          description: Optional stable failure identifier, retained without parsing message text. New category identifiers are accepted without a server upgrade.
         type:
           type: string
           description: Native lifecycle event identifier, legacy identifier, or server-recorded PatchCheck activity.
         patch_number:
           type: integer
+          minimum: 0
+          maximum: 2147483647
         platform:
           type: string
+          maxLength: 64
         release_version:
           type: string
+          maxLength: 1024
         timestamp:
           type: integer
           format: int64
+          minimum: 0
           description: Client timestamp, normally Unix seconds; legacy millisecond values are retained.
         message:
           type: [string, 'null']
+          maxLength: 32768
+          description: Optional diagnostic text, at most 32 KiB of UTF-8 bytes. Identity, architecture, platform, and release-version size limits also apply to UTF-8 bytes.
     PatchEventRecord:
       allOf:
         - $ref: '#/components/schemas/PatchEvent'

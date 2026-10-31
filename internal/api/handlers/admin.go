@@ -125,6 +125,7 @@ func (h *AdminHandler) GetPatchEvents(w http.ResponseWriter, r *http.Request) {
 				AppID: event.AppID.String(), ClientID: event.ClientID, Arch: event.Arch,
 				PatchNumber: event.PatchNumber, Platform: event.Platform, ReleaseVersion: event.ReleaseVersion,
 				Type: event.Type, Timestamp: event.Timestamp, Message: event.Message,
+				EventID: event.EventID, FailureCategory: event.FailureCategory,
 			},
 		})
 	}
