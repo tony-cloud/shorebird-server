@@ -224,7 +224,7 @@ func (h *DeviceHandler) recordPatchCheckActivity(r *http.Request, appID uuid.UUI
 }
 
 // PatchEvents handles POST /api/v1/patches/events
-// Records patch install success/failure events from devices.
+// Records patch download, install, and failure events from devices.
 // No authentication required.
 func (h *DeviceHandler) PatchEvents(w http.ResponseWriter, r *http.Request) {
 	var req models.CreatePatchEventRequest
@@ -239,9 +239,16 @@ func (h *DeviceHandler) PatchEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate event type
+	// Accept the updater's wire identifiers and normalize the two legacy
+	// server-specific names so newly stored events share canonical identifiers.
 	eventType := req.Event.Type
-	if eventType != models.EventPatchInstallSuccess && eventType != models.EventPatchInstallFailure {
+	switch eventType {
+	case "PatchInstallSuccess":
+		eventType = models.EventPatchInstallSuccess
+	case "PatchInstallFailure":
+		eventType = models.EventPatchInstallFailure
+	case models.EventPatchInstallSuccess, models.EventPatchInstallFailure, models.EventPatchDownload, models.EventPatchUpdateFailure:
+	default:
 		respondError(w, http.StatusBadRequest, "Invalid event type", nil)
 		return
 	}

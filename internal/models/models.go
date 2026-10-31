@@ -200,7 +200,7 @@ type PatchRemoval struct {
 	OfflineExpiresAt *time.Time `json:"offline_expires_at,omitempty"`
 }
 
-// CreatePatchEventRequest is sent by devices to report install events.
+// CreatePatchEventRequest is sent by devices to report patch lifecycle events.
 type CreatePatchEventRequest struct {
 	Event PatchEvent `json:"event"`
 }
@@ -218,10 +218,12 @@ type PatchEvent struct {
 	Message        *string `json:"message"`
 }
 
-// Event types.
+// Canonical event identifiers serialized by the native updater.
 const (
-	EventPatchInstallSuccess = "PatchInstallSuccess"
-	EventPatchInstallFailure = "PatchInstallFailure"
+	EventPatchInstallSuccess = "__patch_install__"
+	EventPatchInstallFailure = "__patch_install_failure__"
+	EventPatchDownload       = "__patch_download__"
+	EventPatchUpdateFailure  = "__patch_update_failure__"
 )
 
 // Organization represents an organization.

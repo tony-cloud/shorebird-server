@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -672,10 +673,21 @@ func (db *PgStore) CreatePatchArtifact(ctx context.Context, patchID int, arch, p
 
 // InsertPatchEvent records a patch lifecycle event.
 func (db *PgStore) InsertPatchEvent(ctx context.Context, appID uuid.UUID, clientID, arch, platform, releaseVersion, eventType string, patchNumber int, timestamp int64, message *string) error {
+	// PostgreSQL stores messages as JSONB. A raw Go string is treated by pgx
+	// as already-encoded JSON, so encode the message as a JSON string first.
+	// Preserve SQL NULL for events without a message.
+	var messageJSON interface{}
+	if message != nil {
+		encoded, err := json.Marshal(*message)
+		if err != nil {
+			return fmt.Errorf("failed to encode patch event message: %w", err)
+		}
+		messageJSON = encoded
+	}
 	_, err := db.exec(ctx,
 		`INSERT INTO patch_events (app_id, client_id, arch, patch_number, platform, release_version, event_type, timestamp, message)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		appID, clientID, arch, patchNumber, platform, releaseVersion, eventType, timestamp, message)
+		appID, clientID, arch, patchNumber, platform, releaseVersion, eventType, timestamp, messageJSON)
 	return err
 }
 
