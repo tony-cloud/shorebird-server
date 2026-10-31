@@ -242,7 +242,13 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		userID = session.UserID
 	} else {
 		// Preserve the legacy access-token refresh route without accepting JWTs as OAuth refresh credentials.
-		parts := strings.Fields(r.Header.Get("Authorization"))
+		authHeader := r.Header.Get("Authorization")
+		// Bound input before Fields allocates a slice for untrusted whitespace.
+		if len(authHeader) > auth.MaxTokenLength+len("Bearer sb_api_") {
+			respondError(w, http.StatusUnauthorized, "Invalid token", nil)
+			return
+		}
+		parts := strings.Fields(authHeader)
 		if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
 			respondError(w, http.StatusUnauthorized, "Invalid token", nil)
 			return

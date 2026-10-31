@@ -10,7 +10,9 @@ By default the server uses **SQLite** + **local filesystem** - no Docker,
 no Postgres, no MinIO needed.
 
 ### Prerequisites
-- Go 1.23+
+- Go 1.26.10 or Go 1.27.3, or a later security-patched supported release.
+  Deployment builds must include current Go security fixes; the `go.mod`
+  language version does not enforce a secure compiler or standard library.
 
 ### 1. Build and run
 
@@ -68,6 +70,11 @@ All settings via environment variables. See `.env.example` for the full list.
 | `PATCH_SIGNING_MASTER_KEY` | *(empty)* | Base64-encoded 32-byte independent key wrapping managed RSA private keys |
 | `PATCH_DELIVERY_AES_SECRET` | *(empty)* | Server secret used to derive per-device AES-GCM keys |
 | `PATCH_DELIVERY_CACHE_ENCRYPTED` | `true` | Cache per-device encrypted patch artifacts |
+
+JWT credentials are limited to 8 KiB before parsing, including on the legacy
+bearer refresh route. This limit excludes the `Bearer ` and optional `sb_api_`
+prefixes. Server-issued identity tokens are normally under 1 KiB. Oversized
+credentials return HTTP 401; opaque refresh-token rotation is unchanged.
 
 ### Serve the CLI's default toolchain URLs
 

@@ -9,6 +9,11 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// MaxTokenLength bounds untrusted JWT input before parsing. Server-issued tokens
+// contain only identity and standard claims and are normally under 1 KiB; 8 KiB
+// leaves ample room while bounding decoding, signature, and JSON parsing work.
+const MaxTokenLength = 8 * 1024
+
 // Service handles JWT token creation and validation.
 type Service struct {
 	jwtSecret     []byte
@@ -57,6 +62,10 @@ func (s *Service) GenerateToken(userID int, email string) (string, error) {
 
 // ValidateToken parses and validates a JWT token string.
 func (s *Service) ValidateToken(tokenStr string) (*Claims, error) {
+	if len(tokenStr) > MaxTokenLength {
+		return nil, jwt.ErrTokenMalformed
+	}
+
 	token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(t *jwt.Token) (interface{}, error) {
 		return s.jwtSecret, nil
 	}, jwt.WithValidMethods([]string{"HS256"}), jwt.WithIssuer("shorebird-auth"))
