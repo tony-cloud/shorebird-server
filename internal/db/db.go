@@ -362,26 +362,16 @@ func (db *PgStore) GetChannelByAppIDAndName(ctx context.Context, appID uuid.UUID
 
 // CreateRelease creates a new release.
 func (db *PgStore) CreateRelease(ctx context.Context, appID uuid.UUID, version, flutterRevision string, flutterVersion, displayName *string) (*ReleaseRow, error) {
-	row := &ReleaseRow{}
-	err := db.queryRow(ctx,
-		`INSERT INTO releases (app_id, version, flutter_revision, flutter_version, display_name)
-		 VALUES ($1, $2, $3, $4, $5)
-		 RETURNING id, app_id, version, flutter_revision, flutter_version, display_name, notes, created_at, updated_at`,
-		appID, version, flutterRevision, flutterVersion, displayName,
-	).Scan(&row.ID, &row.AppID, &row.Version, &row.FlutterRevision, &row.FlutterVersion, &row.DisplayName, &row.Notes, &row.CreatedAt, &row.UpdatedAt)
-	if err != nil {
-		return nil, err
-	}
-	return row, nil
+	return db.CreateReleaseWithProtocol(ctx, appID, version, flutterRevision, flutterVersion, displayName, 1)
 }
 
 // GetReleaseByID retrieves a release by ID.
 func (db *PgStore) GetReleaseByID(ctx context.Context, releaseID int) (*ReleaseRow, error) {
 	row := &ReleaseRow{}
 	err := db.queryRow(ctx,
-		`SELECT id, app_id, version, flutter_revision, flutter_version, display_name, notes, created_at, updated_at
+		`SELECT id, app_id, version, flutter_revision, flutter_version, display_name, notes, created_at, updated_at, selection_protocol
 		 FROM releases WHERE id = $1`, releaseID,
-	).Scan(&row.ID, &row.AppID, &row.Version, &row.FlutterRevision, &row.FlutterVersion, &row.DisplayName, &row.Notes, &row.CreatedAt, &row.UpdatedAt)
+	).Scan(&row.ID, &row.AppID, &row.Version, &row.FlutterRevision, &row.FlutterVersion, &row.DisplayName, &row.Notes, &row.CreatedAt, &row.UpdatedAt, &row.SelectionProtocol)
 	if err != nil {
 		return nil, err
 	}
@@ -392,9 +382,9 @@ func (db *PgStore) GetReleaseByID(ctx context.Context, releaseID int) (*ReleaseR
 func (db *PgStore) GetReleaseByAppIDAndVersion(ctx context.Context, appID uuid.UUID, version string) (*ReleaseRow, error) {
 	row := &ReleaseRow{}
 	err := db.queryRow(ctx,
-		`SELECT id, app_id, version, flutter_revision, flutter_version, display_name, notes, created_at, updated_at
+		`SELECT id, app_id, version, flutter_revision, flutter_version, display_name, notes, created_at, updated_at, selection_protocol
 		 FROM releases WHERE app_id = $1 AND version = $2`, appID, version,
-	).Scan(&row.ID, &row.AppID, &row.Version, &row.FlutterRevision, &row.FlutterVersion, &row.DisplayName, &row.Notes, &row.CreatedAt, &row.UpdatedAt)
+	).Scan(&row.ID, &row.AppID, &row.Version, &row.FlutterRevision, &row.FlutterVersion, &row.DisplayName, &row.Notes, &row.CreatedAt, &row.UpdatedAt, &row.SelectionProtocol)
 	if err != nil {
 		return nil, err
 	}
@@ -403,7 +393,7 @@ func (db *PgStore) GetReleaseByAppIDAndVersion(ctx context.Context, appID uuid.U
 
 // GetReleasesByAppID returns all releases for an app.
 func (db *PgStore) GetReleasesByAppID(ctx context.Context, appID uuid.UUID, sideloadableOnly bool) ([]ReleaseRow, error) {
-	query := `SELECT id, app_id, version, flutter_revision, flutter_version, display_name, notes, created_at, updated_at
+	query := `SELECT id, app_id, version, flutter_revision, flutter_version, display_name, notes, created_at, updated_at, selection_protocol
 		 FROM releases WHERE app_id = $1 ORDER BY created_at DESC`
 	// Note: sideloadable filtering is done via artifact join if needed
 	_ = sideloadableOnly
@@ -417,7 +407,7 @@ func (db *PgStore) GetReleasesByAppID(ctx context.Context, appID uuid.UUID, side
 	var result []ReleaseRow
 	for rows.Next() {
 		var r ReleaseRow
-		if err := rows.Scan(&r.ID, &r.AppID, &r.Version, &r.FlutterRevision, &r.FlutterVersion, &r.DisplayName, &r.Notes, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.AppID, &r.Version, &r.FlutterRevision, &r.FlutterVersion, &r.DisplayName, &r.Notes, &r.CreatedAt, &r.UpdatedAt, &r.SelectionProtocol); err != nil {
 			return nil, err
 		}
 		result = append(result, r)
@@ -474,6 +464,9 @@ func (db *PgStore) CreateReleaseArtifact(ctx context.Context, releaseID int, arc
 	// Serialize registration per release so concurrent uploads cannot replace a trust anchor.
 	var lockedID int
 	if err := tx.QueryRow(ctx, `SELECT id FROM releases WHERE id = $1 FOR UPDATE`, releaseID).Scan(&lockedID); err != nil {
+		return nil, err
+	}
+	if err := guardReleaseArtifact(ctx, pgSelectionTx{tx}, releaseID, platform, storageKey, mode, keyID); err != nil {
 		return nil, err
 	}
 	var conflicting int
@@ -656,14 +649,26 @@ func (db *PgStore) GetPatchByReleaseNumber(ctx context.Context, releaseID, patch
 
 // CreatePatchArtifact creates a patch artifact record.
 func (db *PgStore) CreatePatchArtifact(ctx context.Context, patchID int, arch, platform, hash, storageKey string, size int64, hashSignature, podfileLockHash *string, offlineExpiresAt *time.Time) (*PatchArtifactRow, error) {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	if err := guardPatchArtifact(ctx, pgSelectionTx{tx}, patchID, arch, platform, storageKey); err != nil {
+		return nil, err
+	}
+
 	row := &PatchArtifactRow{}
-	err := db.queryRow(ctx,
+	err = tx.QueryRow(ctx,
 		`INSERT INTO patch_artifacts (patch_id, arch, platform, hash, size, storage_key, hash_signature, podfile_lock_hash, offline_expires_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		 RETURNING id, patch_id, arch, platform, hash, size, storage_key, hash_signature, podfile_lock_hash, offline_expires_at, created_at`,
 		patchID, arch, platform, hash, size, storageKey, hashSignature, podfileLockHash, offlineExpiresAt,
 	).Scan(&row.ID, &row.PatchID, &row.Arch, &row.Platform, &row.Hash, &row.Size, &row.StorageKey, &row.HashSignature, &row.PodfileLockHash, &row.OfflineExpiresAt, &row.CreatedAt)
 	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return row, nil
@@ -752,21 +757,20 @@ func (db *PgStore) ListPatchEventActivity(ctx context.Context, appID uuid.UUID, 
 // RollbackPatch marks a patch as rolled back.
 // SetPatchRolledBack atomically changes rollback state and reports whether it changed.
 func (db *PgStore) SetPatchRolledBack(ctx context.Context, releaseID, patchNumber int, rolledBack bool) (bool, error) {
-	query := `DELETE FROM rolled_back_patches WHERE release_id = $1 AND patch_number = $2`
-	if rolledBack {
-		query = `INSERT INTO rolled_back_patches (release_id, patch_number) VALUES ($1, $2) ON CONFLICT DO NOTHING`
-	}
-	result, err := db.exec(ctx, query, releaseID, patchNumber)
+	tx, err := db.pool.Begin(ctx)
 	if err != nil {
 		return false, err
 	}
-	return result.RowsAffected() > 0, nil
+	defer tx.Rollback(ctx)
+	changed, err := setRevocation(ctx, pgSelectionTx{tx}, releaseID, patchNumber, rolledBack)
+	if err != nil {
+		return false, err
+	}
+	return changed, tx.Commit(ctx)
 }
 
 func (db *PgStore) RollbackPatch(ctx context.Context, releaseID, patchNumber int) error {
-	_, err := db.exec(ctx,
-		`INSERT INTO rolled_back_patches (release_id, patch_number) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-		releaseID, patchNumber)
+	_, err := db.SetPatchRolledBack(ctx, releaseID, patchNumber, true)
 	return err
 }
 

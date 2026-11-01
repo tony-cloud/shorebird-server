@@ -58,17 +58,18 @@ type ReleasePlatformDetails struct {
 
 // Release represents a release of an application.
 type Release struct {
-	ID               int                               `json:"id"`
-	AppID            uuid.UUID                         `json:"app_id"`
-	Version          string                            `json:"version"`
-	FlutterRevision  string                            `json:"flutter_revision"`
-	FlutterVersion   *string                           `json:"flutter_version"`
-	DisplayName      *string                           `json:"display_name"`
-	Notes            *string                           `json:"notes"`
-	PlatformStatuses map[string]string                 `json:"platform_statuses"`
-	CreatedAt        time.Time                         `json:"created_at"`
-	UpdatedAt        time.Time                         `json:"updated_at"`
-	Platforms        map[string]ReleasePlatformDetails `json:"platforms"`
+	SelectionProtocol int                               `json:"selection_protocol"`
+	ID                int                               `json:"id"`
+	AppID             uuid.UUID                         `json:"app_id"`
+	Version           string                            `json:"version"`
+	FlutterRevision   string                            `json:"flutter_revision"`
+	FlutterVersion    *string                           `json:"flutter_version"`
+	DisplayName       *string                           `json:"display_name"`
+	Notes             *string                           `json:"notes"`
+	PlatformStatuses  map[string]string                 `json:"platform_statuses"`
+	CreatedAt         time.Time                         `json:"created_at"`
+	UpdatedAt         time.Time                         `json:"updated_at"`
+	Platforms         map[string]ReleasePlatformDetails `json:"platforms"`
 }
 
 // ReleaseStatus values.
@@ -138,17 +139,23 @@ type PatchArtifact struct {
 
 // PatchCheckRequest is the POST /patches/check request body.
 type PatchCheckRequest struct {
-	ReleaseVersion       string  `json:"release_version"`
-	PatchNumber          *int    `json:"patch_number"`
-	PatchHash            *string `json:"patch_hash"`
-	Platform             string  `json:"platform"`
-	Arch                 string  `json:"arch"`
-	AppID                string  `json:"app_id"`
-	Channel              string  `json:"channel"`
-	ClientID             *string `json:"client_id"`
-	CurrentPatchNumber   *int    `json:"current_patch_number"`
-	AcceptEncryptedPatch bool    `json:"accept_encrypted_patch,omitempty"`
-	Nonce                string  `json:"nonce,omitempty"`
+	SelectionProtocol       int     `json:"selection_protocol,omitempty"`
+	BaseArtifactHash        string  `json:"base_artifact_hash,omitempty"`
+	HostABIHash             *string `json:"host_abi_hash"`
+	RuntimeProfile          string  `json:"runtime_profile,omitempty"`
+	AcceptedSelectionEpoch  string  `json:"accepted_selection_epoch,omitempty"`
+	AcceptedSelectionDigest *string `json:"accepted_selection_digest"`
+	ReleaseVersion          string  `json:"release_version"`
+	PatchNumber             *int    `json:"patch_number"`
+	PatchHash               *string `json:"patch_hash"`
+	Platform                string  `json:"platform"`
+	Arch                    string  `json:"arch"`
+	AppID                   string  `json:"app_id"`
+	Channel                 string  `json:"channel"`
+	ClientID                *string `json:"client_id"`
+	CurrentPatchNumber      *int    `json:"current_patch_number"`
+	AcceptEncryptedPatch    bool    `json:"accept_encrypted_patch,omitempty"`
+	Nonce                   string  `json:"nonce,omitempty"`
 }
 
 // PatchCheckResponse is the POST /patches/check response body.
@@ -281,10 +288,11 @@ type CreateAppRequest struct {
 
 // CreateReleaseRequest is the POST /releases request body.
 type CreateReleaseRequest struct {
-	Version         string  `json:"version"`
-	FlutterRevision string  `json:"flutter_revision"`
-	FlutterVersion  *string `json:"flutter_version"`
-	DisplayName     *string `json:"display_name"`
+	SelectionProtocol *int    `json:"selection_protocol"`
+	Version           string  `json:"version"`
+	FlutterRevision   string  `json:"flutter_revision"`
+	FlutterVersion    *string `json:"flutter_version"`
+	DisplayName       *string `json:"display_name"`
 }
 
 // CreateReleaseResponse wraps the created release.
@@ -353,9 +361,10 @@ type CreatePatchArtifactResponse struct {
 
 // UpdateReleaseRequest is the PATCH /releases/{id} request body.
 type UpdateReleaseRequest struct {
-	Status   string                 `json:"status"`
-	Platform string                 `json:"platform"`
-	Metadata map[string]interface{} `json:"metadata"`
+	SelectionArches []string               `json:"selection_arches"`
+	Status          string                 `json:"status"`
+	Platform        string                 `json:"platform"`
+	Metadata        map[string]interface{} `json:"metadata"`
 }
 
 // PromotePatchRequest is the POST /patches/promote request body.

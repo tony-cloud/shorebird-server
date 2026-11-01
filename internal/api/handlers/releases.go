@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/shorebird-server/internal/db"
 	"github.com/shorebird-server/internal/models"
+	"github.com/shorebird-server/internal/selection"
 	"github.com/shorebird-server/internal/storage"
 )
 
@@ -60,17 +62,18 @@ func (h *ReleaseHandler) GetReleases(w http.ResponseWriter, r *http.Request) {
 		}
 
 		result = append(result, models.Release{
-			ID:               rel.ID,
-			AppID:            rel.AppID,
-			Version:          rel.Version,
-			FlutterRevision:  rel.FlutterRevision,
-			FlutterVersion:   rel.FlutterVersion,
-			DisplayName:      rel.DisplayName,
-			Notes:            rel.Notes,
-			PlatformStatuses: statuses,
-			Platforms:        platforms,
-			CreatedAt:        rel.CreatedAt.Time,
-			UpdatedAt:        rel.UpdatedAt.Time,
+			SelectionProtocol: rel.SelectionProtocol,
+			ID:                rel.ID,
+			AppID:             rel.AppID,
+			Version:           rel.Version,
+			FlutterRevision:   rel.FlutterRevision,
+			FlutterVersion:    rel.FlutterVersion,
+			DisplayName:       rel.DisplayName,
+			Notes:             rel.Notes,
+			PlatformStatuses:  statuses,
+			Platforms:         platforms,
+			CreatedAt:         rel.CreatedAt.Time,
+			UpdatedAt:         rel.UpdatedAt.Time,
 		})
 	}
 	if result == nil {
@@ -92,30 +95,47 @@ func (h *ReleaseHandler) CreateRelease(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req models.CreateReleaseRequest
-	if err := decodeJSON(r, &req); err != nil {
+	if err := decodeReleaseCreate(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "Invalid request body", nil)
 		return
 	}
 
-	release, err := h.DB.CreateRelease(r.Context(), appID, req.Version, req.FlutterRevision, req.FlutterVersion, req.DisplayName)
+	protocol := 1
+	if req.SelectionProtocol != nil {
+		protocol = *req.SelectionProtocol
+	}
+	if protocol != 1 && protocol != 2 {
+		respondCodedError(w, 400, "invalid_selection_protocol", "selection_protocol must be 1 or 2")
+		return
+	}
+	if !selection.Text(req.Version, 256) {
+		respondError(w, 400, "Invalid release version", nil)
+		return
+	}
+	release, err := h.DB.CreateReleaseWithProtocol(r.Context(), appID, req.Version, req.FlutterRevision, req.FlutterVersion, req.DisplayName, protocol)
 	if err != nil {
+		if errors.Is(err, db.ErrReleaseReserved) {
+			respondCodedError(w, 409, "release_namespace_reserved", err.Error())
+			return
+		}
 		respondError(w, http.StatusInternalServerError, "Failed to create release", strPtr(err.Error()))
 		return
 	}
 
 	respondJSON(w, http.StatusCreated, models.CreateReleaseResponse{
 		Release: models.Release{
-			ID:               release.ID,
-			AppID:            release.AppID,
-			Version:          release.Version,
-			FlutterRevision:  release.FlutterRevision,
-			FlutterVersion:   release.FlutterVersion,
-			DisplayName:      release.DisplayName,
-			Notes:            release.Notes,
-			PlatformStatuses: map[string]string{},
-			Platforms:        map[string]models.ReleasePlatformDetails{},
-			CreatedAt:        release.CreatedAt.Time,
-			UpdatedAt:        release.UpdatedAt.Time,
+			SelectionProtocol: release.SelectionProtocol,
+			ID:                release.ID,
+			AppID:             release.AppID,
+			Version:           release.Version,
+			FlutterRevision:   release.FlutterRevision,
+			FlutterVersion:    release.FlutterVersion,
+			DisplayName:       release.DisplayName,
+			Notes:             release.Notes,
+			PlatformStatuses:  map[string]string{},
+			Platforms:         map[string]models.ReleasePlatformDetails{},
+			CreatedAt:         release.CreatedAt.Time,
+			UpdatedAt:         release.UpdatedAt.Time,
 		},
 	})
 }
@@ -140,11 +160,36 @@ func (h *ReleaseHandler) UpdateRelease(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req models.UpdateReleaseRequest
-	if err := decodeJSON(r, &req); err != nil {
-		respondError(w, http.StatusBadRequest, "Invalid request body", nil)
+	if immutable, err := readReleaseUpdate(r, &req); immutable {
+		respondCodedError(w, 400, "immutable_release_identity", "Release identity is immutable")
+		return
+	} else if err != nil {
+		respondError(w, 400, "Invalid request body", nil)
 		return
 	}
-
+	release, err := h.DB.GetReleaseByID(r.Context(), releaseID)
+	if err != nil {
+		respondError(w, 404, "Release not found for this app", nil)
+		return
+	}
+	if release.SelectionProtocol == 2 {
+		err := h.DB.SelectionTransaction(r.Context(), releaseID, func(s *selection.State, c *db.SelectionCatalog) error {
+			if err := publishSelection(s, c, req.Platform, req.Status, req.SelectionArches); err != nil {
+				return err
+			}
+			if req.Metadata != nil {
+				encoded, _ := json.Marshal(req.Metadata)
+				c.StatusMetadata[req.Platform] = string(encoded)
+			}
+			return nil
+		})
+		if err != nil {
+			selectionFailure(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if err := h.DB.UpdateReleasePlatformStatus(r.Context(), releaseID, req.Platform, req.Status, req.Metadata); err != nil {
 		respondError(w, http.StatusInternalServerError, "Failed to update release", nil)
 		return
@@ -233,13 +278,6 @@ func (h *ReleaseHandler) CreateReleaseArtifact(w http.ResponseWriter, r *http.Re
 	// Generate a storage key
 	storageKey := storage.GenerateReleaseStorageKey(appID, release.Version, platform, arch, filename)
 
-	// Generate presigned upload URL
-	uploadURL, err := h.Storage.GeneratePresignedUploadURL(r.Context(), storageKey, false, 30*time.Minute, size)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to generate upload URL", strPtr(err.Error()))
-		return
-	}
-
 	// Create the artifact record in DB
 	var phl *string
 	if podfileLockHash != "" {
@@ -248,11 +286,22 @@ func (h *ReleaseHandler) CreateReleaseArtifact(w http.ResponseWriter, r *http.Re
 
 	artifact, err := h.DB.CreateReleaseArtifact(r.Context(), releaseID, arch, platform, hash, storageKey, size, canSideload, phl, signing)
 	if err != nil {
+		if errors.Is(err, db.ErrSelectionImmutable) {
+			respondCodedError(w, 409, "selection_scope_immutable", err.Error())
+			return
+		}
 		if errors.Is(err, db.ErrSigningPolicyConflict) {
 			respondError(w, http.StatusConflict, "Release signing policy is immutable", nil)
 			return
 		}
 		respondError(w, http.StatusInternalServerError, "Failed to create artifact record", strPtr(err.Error()))
+		return
+	}
+
+	// Generate presigned upload URL
+	uploadURL, err := h.Storage.GeneratePresignedUploadURL(r.Context(), storageKey, false, 30*time.Minute, size)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to generate upload URL", strPtr(err.Error()))
 		return
 	}
 

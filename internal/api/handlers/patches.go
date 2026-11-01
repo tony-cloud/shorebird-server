@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"slices"
 	"strconv"
@@ -144,12 +145,6 @@ func (h *PatchHandler) CreatePatchArtifact(w http.ResponseWriter, r *http.Reques
 	filename := "dlc.vmcode" // standard patch artifact name
 	storageKey := storage.GeneratePatchStorageKey(appID, release.ID, patch.Number, platform, arch, filename)
 
-	uploadURL, err := h.Storage.GeneratePresignedUploadURL(r.Context(), storageKey, false, 30*time.Minute, size)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to generate upload URL", strPtr(err.Error()))
-		return
-	}
-
 	// Create the artifact record
 	var hs *string
 	if hashSignature != "" {
@@ -162,7 +157,21 @@ func (h *PatchHandler) CreatePatchArtifact(w http.ResponseWriter, r *http.Reques
 
 	artifact, err := h.DB.CreatePatchArtifact(r.Context(), patchID, arch, platform, hash, storageKey, size, hs, phl, offlineExpiresAt)
 	if err != nil {
+		if errors.Is(err, db.ErrSelectionImmutable) {
+			respondCodedError(w, 409, "immutable_artifact_storage_key", err.Error())
+			return
+		}
+		if errors.Is(err, db.ErrPatchImmutable) {
+			respondCodedError(w, 409, "patch_content_immutable", err.Error())
+			return
+		}
 		respondError(w, http.StatusInternalServerError, "Failed to create artifact record", strPtr(err.Error()))
+		return
+	}
+
+	uploadURL, err := h.Storage.GeneratePresignedUploadURL(r.Context(), storageKey, false, 30*time.Minute, size)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to generate upload URL", strPtr(err.Error()))
 		return
 	}
 

@@ -1,0 +1,25 @@
+{
+  "format": "open-aot-vmcode-encrypted-v1",
+  "metadata": {
+    "app_id": "11111111-1111-4111-8111-111111111111",
+    "app_build_id": "1.0.0+1",
+    "flavor_id": "pro",
+    "license_type": "pro",
+    "sdk_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "base_snapshot_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "patch_snapshot_hash": "d64f3e7359ebdf17f7b50e4737cf62c7d49367bc66f59dd02e8004be6e84efc1",
+    "target_os": "ios",
+    "target_arch": "arm64",
+    "runtime_mode": "dart-bytecode-interpreter"
+  },
+  "payload_kind": "full-snapshot",
+  "payload_sha256": "d64f3e7359ebdf17f7b50e4737cf62c7d49367bc66f59dd02e8004be6e84efc1",
+  "encrypted_payload_base64": "c3ludGhldGljLW5vbmV4ZWN1dGFibGUtZml4dHVyZQ==",
+  "encryption": {
+    "algorithm": "AES-256-GCM",
+    "key_id": "fixture-pro-key",
+    "nonce_base64": "AAAAAAAAAAAAAAAA",
+    "tag_base64": "AAAAAAAAAAAAAAAAAAAAAA==",
+    "aad_sha256": "f1a25d6833588e3b337fe4e27a11201a0611a96f8b1a8c329fdd09345c7b3e85"
+  }
+}

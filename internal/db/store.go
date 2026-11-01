@@ -82,6 +82,7 @@ var _ sql.Scanner = (*ShorebirdTime)(nil)
 // Store is the database abstraction. Both PostgreSQL and SQLite
 // backends implement this interface.
 type Store interface {
+	SelectionStore
 	Close()
 
 	// --- Users ---
@@ -227,15 +228,16 @@ type ChannelRow struct {
 
 // ReleaseRow represents a release row.
 type ReleaseRow struct {
-	ID              int
-	AppID           uuid.UUID
-	Version         string
-	FlutterRevision string
-	FlutterVersion  *string
-	DisplayName     *string
-	Notes           *string
-	CreatedAt       ShorebirdTime
-	UpdatedAt       ShorebirdTime
+	SelectionProtocol int
+	ID                int
+	AppID             uuid.UUID
+	Version           string
+	FlutterRevision   string
+	FlutterVersion    *string
+	DisplayName       *string
+	Notes             *string
+	CreatedAt         ShorebirdTime
+	UpdatedAt         ShorebirdTime
 }
 
 // ReleaseSigningPolicy is immutable across a release platform's baseline and supplements.

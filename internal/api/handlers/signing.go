@@ -308,7 +308,7 @@ func (h *SigningHandler) resolveReleaseSigningPolicy(ctx context.Context, releas
 	}
 	primaryTags := map[string][]string{
 		"ios":   {"xcarchive", "xcframework", "runner"},
-		"macos": {"app"}, "linux": {"bundle"}, "windows": {"win_archive"},
+		"macos": {"app"}, "linux": {"bundle", "bundle_aarch64"}, "windows": {"win_archive", "win_archive_aarch64"},
 		"android": {"aab", "aar"},
 	}[platform]
 	isPrimary := func(tag string) bool {
@@ -338,7 +338,7 @@ func (h *SigningHandler) resolveReleaseSigningPolicy(ctx context.Context, releas
 		return nil, sql.ErrNoRows
 	}
 	for _, artifact := range artifacts {
-		if isPrimary(artifact.Arch) || artifact.Arch == platform+"_supplement" {
+		if isPrimary(artifact.Arch) || artifact.Arch == platform+"_supplement" || artifact.Arch == platform+"_supplement_aarch64" {
 			if !sameSigningPolicy(*policy, artifact) {
 				return nil, db.ErrSigningPolicyConflict
 			}

@@ -26,7 +26,7 @@ type DeviceHandler struct {
 // No authentication required.
 func (h *DeviceHandler) PatchCheck(w http.ResponseWriter, r *http.Request) {
 	var req models.PatchCheckRequest
-	if err := decodeJSON(r, &req); err != nil {
+	if err := decodePatchCheck(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "Invalid request body", nil)
 		return
 	}
@@ -39,7 +39,11 @@ func (h *DeviceHandler) PatchCheck(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if !h.validatePatchDeliveryRequest(w, req) {
+	if req.SelectionProtocol != 0 && req.SelectionProtocol != 1 && req.SelectionProtocol != 2 {
+		selectionFailure(w, invalid("invalid_selection_protocol"))
+		return
+	}
+	if req.SelectionProtocol != 2 && !h.validatePatchDeliveryRequest(w, req) {
 		return
 	}
 
@@ -61,6 +65,10 @@ func (h *DeviceHandler) PatchCheck(w http.ResponseWriter, r *http.Request) {
 	// Find the release by app and version
 	release, err := h.DB.GetReleaseByAppIDAndVersion(r.Context(), appID, req.ReleaseVersion)
 	if err != nil {
+		if req.SelectionProtocol == 2 {
+			selectionFailure(w, conflict("selection_scope_incomplete"))
+			return
+		}
 		// Release not found, no patch available
 		respondJSON(w, http.StatusOK, models.PatchCheckResponse{
 			PatchAvailable:         false,
@@ -69,6 +77,14 @@ func (h *DeviceHandler) PatchCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.SelectionProtocol == 2 {
+		h.selectionCheck(w, r, req, release.ID)
+		return
+	}
+	if release.SelectionProtocol == 2 {
+		selectionFailure(w, conflict("selection_protocol_mismatch"))
+		return
+	}
 	// Get rolled back patches
 	rolledBack, err := h.DB.GetRolledBackPatchNumbers(r.Context(), release.ID)
 	if err != nil {

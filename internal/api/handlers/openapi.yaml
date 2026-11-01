@@ -145,7 +145,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PatchCheckResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/PatchCheckResponse'
+                  - $ref: '#/components/schemas/SelectionCheckResponse'
   /api/v1/patches/events:
     post:
       operationId: patchEvents
@@ -416,6 +418,71 @@ paths:
       responses:
         '204':
           description: Release deleted.
+  /api/v1/apps/{appId}/releases/{releaseId}/selection-scopes:
+    get:
+      operationId: getSelectionScopes
+      tags: [releases]
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+        - $ref: '#/components/parameters/ReleaseId'
+      responses:
+        '200':
+          description: Immutable scope records, sorted by platform and architecture. Requires app read access.
+  /api/v1/apps/{appId}/releases/{releaseId}/selection-scopes/{platform}/{arch}:
+    put:
+      operationId: putSelectionScope
+      tags: [releases]
+      description: Write-once protocol-2 runtime identity and uploaded-artifact provenance. Requires app write access. Identical retries remain valid after publication.
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+        - $ref: '#/components/parameters/ReleaseId'
+        - {name: platform, in: path, required: true, schema: {type: string, enum: [android, ios, macos, windows, linux]}}
+        - {name: arch, in: path, required: true, schema: {type: string, enum: [arm, aarch64, x86, x86_64]}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterSelectionScopeRequest'
+      responses:
+        '201': {description: Immutable scope registered.}
+        '200': {description: Identical registration retry.}
+        '409': {description: Legacy release, frozen platform, changed binding, or incomplete managed signing references.}
+  /api/v1/apps/{appId}/releases/{releaseId}/variants/{variantId}:
+    put:
+      operationId: putVariant
+      tags: [releases]
+      description: Map a variant to immutable content in a published active scope. Requires app write access. Existing installation grants remain unchanged.
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+        - $ref: '#/components/parameters/ReleaseId'
+        - {name: variantId, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9_-]{0,63}$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VariantMappingRequest'
+      responses:
+        '200': {description: Variant mapping stored.}
+        '409': {description: Inactive/unpublished scope, revoked content, incompatible content, or signing policy mismatch.}
+  /api/v1/apps/{appId}/releases/{releaseId}/selections:
+    post:
+      operationId: assignSelection
+      tags: [releases]
+      description: Authenticated backend assignment with expected-epoch CAS and UUIDv4 idempotency. Requires app write access. Caller owns entitlement policy; client IDs are routing metadata only.
+      parameters:
+        - $ref: '#/components/parameters/AppId'
+        - $ref: '#/components/parameters/ReleaseId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignSelectionRequest'
+      responses:
+        '200': {description: Durably committed selection and stable digest, or original identical idempotency result.}
+        '409': {description: CAS/idempotency conflict, unavailable scope/content, exhausted epoch, or selection_exceeds_content_expiry.}
   /api/v1/apps/{appId}/releases/{releaseId}/artifacts:
     get:
       operationId: getReleaseArtifacts
@@ -1109,7 +1176,9 @@ components:
     Release:
       type: object
       additionalProperties: true
+      required: [selection_protocol]
       properties:
+        selection_protocol: {type: integer, enum: [1, 2]}
         id:
           type: integer
         version:
@@ -1130,21 +1199,30 @@ components:
                 enum: [managed, customer, unsigned]
     CreateReleaseRequest:
       type: object
-      additionalProperties: true
+      additionalProperties: false
       required: [version, flutter_revision]
       properties:
+        selection_protocol: {type: integer, enum: [1, 2], default: 1}
+        display_name: {type: [string, 'null']}
         version:
           type: string
         flutter_revision:
           type: string
         flutter_version:
           type: string
-        platform_statuses:
-          type: object
-          additionalProperties: true
     UpdateReleaseRequest:
       type: object
-      additionalProperties: true
+      additionalProperties: false
+      properties:
+        platform: {type: string}
+        status: {type: string, enum: [draft, active, inactive]}
+        metadata: {type: object, additionalProperties: true}
+        selection_arches:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: {type: string, enum: [arm, aarch64, x86, x86_64]}
+          description: Required to activate protocol-2 platforms; must equal the complete immutable registered architecture set.
     CreateReleaseArtifactRequest:
       type: object
       additionalProperties: true
@@ -1243,6 +1321,12 @@ components:
       additionalProperties: true
       required: [app_id, channel, release_version, platform, arch]
       properties:
+        selection_protocol: {type: integer, enum: [1, 2], default: 1}
+        base_artifact_hash: {type: string, pattern: '^[0-9a-f]{64}$'}
+        host_abi_hash: {type: [string, 'null']}
+        runtime_profile: {type: string, enum: [native-aot, interpreter-body, interpreter-structural, interpreter-full]}
+        accepted_selection_epoch: {type: string, pattern: '^(0|[1-9][0-9]*)$'}
+        accepted_selection_digest: {type: [string, 'null'], pattern: '^[0-9a-f]{64}$'}
         app_id:
           type: string
           format: uuid
@@ -1292,3 +1376,67 @@ components:
     PatchEncryptionMetadata:
       type: object
       additionalProperties: true
+    RegisterSelectionScopeRequest:
+      type: object
+      additionalProperties: false
+      required: [base_artifact_hash, host_abi_hash, runtime_profile, release_artifact_id, supplement_artifact_id]
+      properties:
+        base_artifact_hash: {type: string, pattern: '^[0-9a-f]{64}$'}
+        host_abi_hash: {type: [string, 'null'], pattern: '^[0-9a-f]{64}$'}
+        runtime_profile: {type: string, enum: [native-aot, interpreter-body, interpreter-structural, interpreter-full]}
+        release_artifact_id: {type: integer, minimum: 1}
+        supplement_artifact_id: {type: [integer, 'null'], minimum: 1}
+    SelectionTarget:
+      type: object
+      additionalProperties: false
+      required: [kind, patch_number, artifact_hash, encryption, artifact_key_id]
+      properties:
+        kind: {type: string, enum: [base, patch]}
+        patch_number: {type: [string, 'null'], pattern: '^[1-9][0-9]*$'}
+        artifact_hash: {type: [string, 'null'], pattern: '^[0-9a-f]{64}$'}
+        encryption: {type: string, enum: [none, transport-aes-256-gcm, artifact-aes-256-gcm]}
+        artifact_key_id: {type: [string, 'null']}
+    VariantMappingRequest:
+      type: object
+      additionalProperties: false
+      required: [platform, arch, channel, license_type, target]
+      properties:
+        platform: {type: string, enum: [android, ios, macos, windows, linux]}
+        arch: {type: string, enum: [arm, aarch64, x86, x86_64]}
+        channel: {type: string, pattern: '^[a-z][a-z0-9_-]{0,63}$'}
+        license_type: {type: string, pattern: '^[a-z][a-z0-9_-]{0,63}$'}
+        target: {$ref: '#/components/schemas/SelectionTarget'}
+    AssignSelectionRequest:
+      type: object
+      additionalProperties: false
+      required: [client_id, platform, arch, channel, variant_id, entitlement_revision, not_before, offline_valid_until, expected_epoch, idempotency_key]
+      properties:
+        client_id: {type: string, minLength: 1}
+        platform: {type: string, enum: [android, ios, macos, windows, linux]}
+        arch: {type: string, enum: [arm, aarch64, x86, x86_64]}
+        channel: {type: string, pattern: '^[a-z][a-z0-9_-]{0,63}$'}
+        variant_id: {type: string, pattern: '^[a-z][a-z0-9_-]{0,63}$'}
+        entitlement_revision: {type: string, minLength: 1, description: Opaque nonsecret authenticated backend policy revision.}
+        not_before: {type: string, pattern: '^(0|[1-9][0-9]*)$'}
+        offline_valid_until: {type: [string, 'null'], pattern: '^(0|[1-9][0-9]*)$', description: Explicit perpetual grant when null. Finite artifact expiry requires a finite lease no later than that expiry.}
+        expected_epoch: {type: string, pattern: '^(0|[1-9][0-9]*)$'}
+        idempotency_key: {type: string, format: uuid}
+    SelectionCheckResponse:
+      type: object
+      additionalProperties: false
+      required: [version, selection, selection_digest, delivery, authentication]
+      properties:
+        version: {type: integer, const: 2}
+        selection:
+          type: object
+          description: Strict immutable descriptor specified by VARIANT_SELECTION_PROTOCOL.md. Epoch and time values are canonical decimal strings; nullable members are always present.
+          required: [epoch, scope, channel, variant_id, license_type, entitlement_revision, target, not_before, offline_valid_until, fallback]
+        selection_digest: {type: string, pattern: '^[0-9a-f]{64}$'}
+        delivery: {type: [object, 'null'], description: Null for base. Patch delivery binds decimal-string number, installed hash, URL, hash signature and nullable transport encryption.}
+        authentication:
+          type: object
+          additionalProperties: false
+          required: [payload, signature]
+          properties:
+            payload: {type: string, description: Standard padded base64 of the exact signed UTF-8 JSON bytes containing version 2, complete request context, selection, selection_digest and delivery.}
+            signature: {type: string, description: Standard padded base64 RSA PKCS1v15 SHA-256 signature over decoded payload bytes.}

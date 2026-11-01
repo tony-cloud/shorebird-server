@@ -129,6 +129,10 @@ func NewRouter(authService *authpkg.Service, database db.Store, store storage.St
 			r.Patch("/apps/{appId}/releases/{releaseId}", releaseHandler.UpdateRelease)
 			r.Delete("/apps/{appId}/releases/{releaseId}", releaseHandler.DeleteRelease)
 
+			r.Put("/apps/{appId}/releases/{releaseId}/selection-scopes/{platform}/{arch}", releaseHandler.PutSelectionScope)
+			r.Get("/apps/{appId}/releases/{releaseId}/selection-scopes", releaseHandler.GetSelectionScopes)
+			r.Put("/apps/{appId}/releases/{releaseId}/variants/{variantId}", releaseHandler.PutVariant)
+			r.Post("/apps/{appId}/releases/{releaseId}/selections", releaseHandler.AssignSelection)
 			// Release artifacts
 			r.Post("/apps/{appId}/releases/{releaseId}/artifacts", releaseHandler.CreateReleaseArtifact)
 			r.Get("/apps/{appId}/releases/{releaseId}/artifacts", releaseHandler.GetReleaseArtifacts)

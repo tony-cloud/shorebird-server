@@ -31,6 +31,10 @@ func NewSqliteStore(path string) (*SqliteStore, error) {
 		return nil, fmt.Errorf("sqlite: open: %w", err)
 	}
 	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	store := &SqliteStore{db: db}
 	if err := store.migrate(context.Background()); err != nil {
@@ -335,24 +339,12 @@ func (s *SqliteStore) GetChannelByAppIDAndName(ctx context.Context, appID uuid.U
 
 // --- Releases ---
 func (s *SqliteStore) CreateRelease(ctx context.Context, appID uuid.UUID, version, flutterRevision string, flutterVersion, displayName *string) (*ReleaseRow, error) {
-	r := &ReleaseRow{AppID: appID, Version: version, FlutterRevision: flutterRevision, FlutterVersion: flutterVersion, DisplayName: displayName}
-	var fv, dn interface{}
-	if flutterVersion != nil {
-		fv = *flutterVersion
-	}
-	if displayName != nil {
-		dn = *displayName
-	}
-	err := s.db.QueryRowContext(ctx, `INSERT INTO releases (app_id, version, flutter_revision, flutter_version, display_name) VALUES (?, ?, ?, ?, ?) RETURNING id, notes, created_at, updated_at`, appID.String(), version, flutterRevision, fv, dn).Scan(&r.ID, &r.Notes, &r.CreatedAt, &r.UpdatedAt)
-	if err != nil {
-		return nil, err
-	}
-	return r, nil
+	return s.CreateReleaseWithProtocol(ctx, appID, version, flutterRevision, flutterVersion, displayName, 1)
 }
 func (s *SqliteStore) GetReleaseByID(ctx context.Context, releaseID int) (*ReleaseRow, error) {
 	r := &ReleaseRow{}
 	var aid string
-	err := s.db.QueryRowContext(ctx, `SELECT id, app_id, version, flutter_revision, flutter_version, display_name, notes, created_at, updated_at FROM releases WHERE id = ?`, releaseID).Scan(&r.ID, &aid, &r.Version, &r.FlutterRevision, &r.FlutterVersion, &r.DisplayName, &r.Notes, &r.CreatedAt, &r.UpdatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id, app_id, version, flutter_revision, flutter_version, display_name, notes, created_at, updated_at, selection_protocol FROM releases WHERE id = ?`, releaseID).Scan(&r.ID, &aid, &r.Version, &r.FlutterRevision, &r.FlutterVersion, &r.DisplayName, &r.Notes, &r.CreatedAt, &r.UpdatedAt, &r.SelectionProtocol)
 	if err != nil {
 		return nil, err
 	}
@@ -362,7 +354,7 @@ func (s *SqliteStore) GetReleaseByID(ctx context.Context, releaseID int) (*Relea
 func (s *SqliteStore) GetReleaseByAppIDAndVersion(ctx context.Context, appID uuid.UUID, version string) (*ReleaseRow, error) {
 	r := &ReleaseRow{}
 	var aid string
-	err := s.db.QueryRowContext(ctx, `SELECT id, app_id, version, flutter_revision, flutter_version, display_name, notes, created_at, updated_at FROM releases WHERE app_id = ? AND version = ?`, appID.String(), version).Scan(&r.ID, &aid, &r.Version, &r.FlutterRevision, &r.FlutterVersion, &r.DisplayName, &r.Notes, &r.CreatedAt, &r.UpdatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id, app_id, version, flutter_revision, flutter_version, display_name, notes, created_at, updated_at, selection_protocol FROM releases WHERE app_id = ? AND version = ?`, appID.String(), version).Scan(&r.ID, &aid, &r.Version, &r.FlutterRevision, &r.FlutterVersion, &r.DisplayName, &r.Notes, &r.CreatedAt, &r.UpdatedAt, &r.SelectionProtocol)
 	if err != nil {
 		return nil, err
 	}
@@ -371,7 +363,7 @@ func (s *SqliteStore) GetReleaseByAppIDAndVersion(ctx context.Context, appID uui
 }
 func (s *SqliteStore) GetReleasesByAppID(ctx context.Context, appID uuid.UUID, sideloadableOnly bool) ([]ReleaseRow, error) {
 	_ = sideloadableOnly
-	rows, err := s.db.QueryContext(ctx, `SELECT id, app_id, version, flutter_revision, flutter_version, display_name, notes, created_at, updated_at FROM releases WHERE app_id = ? ORDER BY created_at DESC`, appID.String())
+	rows, err := s.db.QueryContext(ctx, `SELECT id, app_id, version, flutter_revision, flutter_version, display_name, notes, created_at, updated_at, selection_protocol FROM releases WHERE app_id = ? ORDER BY created_at DESC`, appID.String())
 	if err != nil {
 		return nil, err
 	}
@@ -380,7 +372,7 @@ func (s *SqliteStore) GetReleasesByAppID(ctx context.Context, appID uuid.UUID, s
 	for rows.Next() {
 		var r ReleaseRow
 		var aid string
-		if err := rows.Scan(&r.ID, &aid, &r.Version, &r.FlutterRevision, &r.FlutterVersion, &r.DisplayName, &r.Notes, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &aid, &r.Version, &r.FlutterRevision, &r.FlutterVersion, &r.DisplayName, &r.Notes, &r.CreatedAt, &r.UpdatedAt, &r.SelectionProtocol); err != nil {
 			return nil, err
 		}
 		r.AppID, _ = uuid.Parse(aid)
@@ -426,6 +418,9 @@ func (s *SqliteStore) CreateReleaseArtifact(ctx context.Context, releaseID int, 
 		return nil, err
 	}
 	defer tx.Rollback()
+	if err := guardReleaseArtifact(ctx, sqliteSelectionTx{tx}, releaseID, platform, storageKey, mode, keyID); err != nil {
+		return nil, err
+	}
 	var conflicting int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM release_artifacts WHERE release_id = ? AND platform = ? AND (COALESCE(signing_mode, '') <> COALESCE(?, '') OR COALESCE(signing_key_id, 0) <> COALESCE(?, 0))`, releaseID, platform, mode, keyID).Scan(&conflicting); err != nil {
 		return nil, err
@@ -541,13 +536,25 @@ func (s *SqliteStore) GetPatchByReleaseNumber(ctx context.Context, releaseID, pa
 
 // --- Patch Artifacts ---
 func (s *SqliteStore) CreatePatchArtifact(ctx context.Context, patchID int, arch, platform, hash, storageKey string, size int64, hashSignature, podfileLockHash *string, offlineExpiresAt *time.Time) (*PatchArtifactRow, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if err := guardPatchArtifact(ctx, sqliteSelectionTx{tx}, patchID, arch, platform, storageKey); err != nil {
+		return nil, err
+	}
+
 	r := &PatchArtifactRow{PatchID: patchID, Arch: arch, Platform: platform, Hash: hash, Size: size, StorageKey: storageKey, HashSignature: hashSignature, PodfileLockHash: podfileLockHash}
 	var expires interface{}
 	if offlineExpiresAt != nil {
 		expires = offlineExpiresAt.UTC().Format(time.RFC3339Nano)
 	}
-	err := s.db.QueryRowContext(ctx, `INSERT INTO patch_artifacts (patch_id, arch, platform, hash, size, storage_key, hash_signature, podfile_lock_hash, offline_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, created_at, offline_expires_at`, patchID, arch, platform, hash, size, storageKey, hashSignature, podfileLockHash, expires).Scan(&r.ID, &r.CreatedAt, &r.OfflineExpiresAt)
+	err = tx.QueryRowContext(ctx, `INSERT INTO patch_artifacts (patch_id, arch, platform, hash, size, storage_key, hash_signature, podfile_lock_hash, offline_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, created_at, offline_expires_at`, patchID, arch, platform, hash, size, storageKey, hashSignature, podfileLockHash, expires).Scan(&r.ID, &r.CreatedAt, &r.OfflineExpiresAt)
 	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return r, nil
@@ -599,20 +606,20 @@ func (s *SqliteStore) ListPatchEventActivity(ctx context.Context, appID uuid.UUI
 // --- Rollbacks ---
 // SetPatchRolledBack atomically changes rollback state and reports whether it changed.
 func (s *SqliteStore) SetPatchRolledBack(ctx context.Context, releaseID, patchNumber int, rolledBack bool) (bool, error) {
-	query := `DELETE FROM rolled_back_patches WHERE release_id = ? AND patch_number = ?`
-	if rolledBack {
-		query = `INSERT OR IGNORE INTO rolled_back_patches (release_id, patch_number) VALUES (?, ?)`
-	}
-	result, err := s.db.ExecContext(ctx, query, releaseID, patchNumber)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
-	affected, err := result.RowsAffected()
-	return affected > 0, err
+	defer tx.Rollback()
+	changed, err := setRevocation(ctx, sqliteSelectionTx{tx}, releaseID, patchNumber, rolledBack)
+	if err != nil {
+		return false, err
+	}
+	return changed, tx.Commit()
 }
 
 func (s *SqliteStore) RollbackPatch(ctx context.Context, releaseID, patchNumber int) error {
-	_, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO rolled_back_patches (release_id, patch_number) VALUES (?, ?)`, releaseID, patchNumber)
+	_, err := s.SetPatchRolledBack(ctx, releaseID, patchNumber, true)
 	return err
 }
 func (s *SqliteStore) GetRolledBackPatchNumbers(ctx context.Context, releaseID int) ([]int, error) {
@@ -700,6 +707,7 @@ func (s *SqliteStore) migrate(ctx context.Context) error {
 		return err
 	}
 	alter := []string{
+		`ALTER TABLE releases ADD COLUMN selection_protocol INTEGER NOT NULL DEFAULT 1 CHECK(selection_protocol IN (1,2))`,
 		`ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0`,
@@ -716,7 +724,18 @@ func (s *SqliteStore) migrate(ctx context.Context) error {
 		}
 	}
 	_, err = s.db.ExecContext(ctx, `
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_patch_events_event_id ON patch_events (app_id, client_id, event_id) WHERE event_id IS NOT NULL;
+		CREATE TABLE IF NOT EXISTS release_namespace_reservations(app_id TEXT NOT NULL,version TEXT NOT NULL,selection_protocol INTEGER NOT NULL CHECK(selection_protocol IN (1,2)),PRIMARY KEY(app_id,version));
+ CREATE TABLE IF NOT EXISTS artifact_storage_namespaces(storage_key TEXT PRIMARY KEY,selection_protected BOOLEAN NOT NULL);
+ CREATE TABLE IF NOT EXISTS release_selection_states(release_id INTEGER PRIMARY KEY REFERENCES releases(id) ON DELETE CASCADE,state TEXT NOT NULL);
+ INSERT OR IGNORE INTO release_namespace_reservations(app_id,version,selection_protocol) SELECT app_id,version,selection_protocol FROM releases;
+ INSERT INTO artifact_storage_namespaces(storage_key,selection_protected)
+ SELECT storage_key,MAX(selection_protocol)=2 FROM (
+ SELECT a.storage_key,r.selection_protocol FROM release_artifacts a JOIN releases r ON a.release_id=r.id
+ UNION ALL SELECT a.storage_key,r.selection_protocol FROM patch_artifacts a JOIN patches p ON a.patch_id=p.id JOIN releases r ON p.release_id=r.id
+ ) existing GROUP BY storage_key
+ ON CONFLICT(storage_key) DO UPDATE SET selection_protected=artifact_storage_namespaces.selection_protected OR excluded.selection_protected;
+
+ CREATE UNIQUE INDEX IF NOT EXISTS idx_patch_events_event_id ON patch_events (app_id, client_id, event_id) WHERE event_id IS NOT NULL;
 		UPDATE users SET email_verified = 1 WHERE email_verified IS NULL;
 		UPDATE users SET is_admin = 1 WHERE id = (SELECT MIN(id) FROM users) AND NOT EXISTS (SELECT 1 FROM users WHERE is_admin = 1);
 		INSERT OR IGNORE INTO settings (key, value) VALUES

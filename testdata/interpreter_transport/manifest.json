@@ -1,0 +1,8 @@
+{
+  "encoder": "updater patch::make_patch(empty_base, envelope), zstd+bipatch v1 literal-only",
+  "updater_git_revision": "92a7015bca749842de87131e354bfda626390128",
+  "encoder_binary_sha256": "83e03052a7fe5189b5640e70f42d4fc79cbf651c3c3985d5e6fdc34cc63ce2ab",
+  "encoder_source_sha256": "c40cc77cd60af0600df1e6652d0b3e0bb430524dc9fb26d55be01a8c85e2223f",
+  "installed_envelope_sha256": "12b6f65a4083cc99733590ae148bb1816e0dfff9d6654643ed45b0b51b9049c0",
+  "compressed_transport_sha256": "a023c5b3228385bbd294d84c817425cbaab2afb84b54f8cddbd6b927619af493"
+}
