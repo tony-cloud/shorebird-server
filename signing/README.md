@@ -15,3 +15,7 @@ installing it. It is public and is written by shorebird-workspace
 `scripts/provision_release_keys.py --write-repo-pins`; it stays empty until
 the operator provisions the production key, and the installer then refuses
 every release (the DEVELOPMENT-ONLY key needs `--allow-development`).
+
+`install.sh --build-from-source` never uses these files: it creates a
+host-only key `/etc/shorebird-server/server-update-signing.pem` on the server
+(root 0600) and pins only that key into the binaries it builds there.

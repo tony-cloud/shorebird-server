@@ -11,6 +11,7 @@ SERVER = HERE.parents[1]
 PAYLOADS = (
     ("install_body.sh", HERE / "install_body.sh"),
     ("install_lib.py", HERE / "install_lib.py"),
+    ("install_dependencies.sh", HERE / "install_dependencies.sh"),
     ("server.env.example", HERE / "server.env.example"),
     ("server-update.json", HERE / "server-update.json"),
     ("shorebird-server.service", SERVER / "deploy" / "systemd" / "shorebird-server.service"),

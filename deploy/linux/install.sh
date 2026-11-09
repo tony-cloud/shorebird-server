@@ -20,24 +20,50 @@ usage() {
     cat <<'HELP'
 Usage: sudo bash install.sh [options]
 
-Source of the server binary (every source is verified against the pinned
-update signing key before it is executed):
+Source of the server binary (every source is verified against a pinned update
+signing key before it is executed):
   (default)            reuse the installed managed binary, otherwise download the
                        newest signed release of tony-cloud/shorebird-server
   --zip FILE           signed update ZIP (shorebird-server-update-<os>-<arch>-<version>.zip)
   --binary FILE        raw binary with FILE.manifest.json and FILE.sig next to it
   --channel CHANNEL    download channel: auto (stable, else dev), stable or dev
   --use-mirror         try the TonyCloud mirror before GitHub (an untrusted transport)
+  --build-from-source  build on this host instead: download the source and the Go
+                       toolchain (SHA-256 checked against go.dev), sign with a host-only
+                       update key (/etc/shorebird-server/server-update-signing.pem,
+                       created once). A rerun with a newer --ref upgrades through the
+                       server's self-update transaction (trial, watchdog rollback).
+  --ref REF            source commit, branch or tag (default: main); a tag vX.Y.Z
+                       builds that stable version, anything else a dev version
+  --source-dir DIR     build a local git checkout instead of downloading --ref
+  --go-root DIR        use this Go toolchain instead of downloading go.mod's
+
+Database (first install; a rerun keeps the database and refuses to switch):
+  (default)            local PostgreSQL (installed with apt when missing): role and
+                       database "shorebird", Unix socket, peer authentication, no password
+  --pg-socket DIR      local PostgreSQL socket directory (default /var/run/postgresql)
+  --pg-port PORT       local PostgreSQL port (default 5432)
+  --database-url URL   external/managed PostgreSQL instead (nothing is installed)
+  --sqlite             SQLite file instead (small or test installs only)
+  --postgres           require the local PostgreSQL (refuses an existing SQLite install)
+  --skip-packages      never run apt; fail when something is missing
+
+Public address:
+  --domain NAME        serve https://NAME through Caddy (automatic HTTPS); sets the
+                       base URL and, on a first install, listens on 127.0.0.1:8080 only
+  --acme-email EMAIL   contact for the Let's Encrypt account (with --domain)
+  --install-caddy      install Caddy with apt when it is missing (with --domain);
+                       without Caddy the exact manual proxy steps are printed
 
 Configuration (first install defaults; reruns keep existing values unless given):
   --base-url URL       public URL devices and the CLI use (default http://<fqdn>:<port>)
-  --listen HOST:PORT   listen address (default 0.0.0.0:8080)
+  --listen HOST:PORT   listen address (default 0.0.0.0:8080; 127.0.0.1:8080 with --domain)
   --admin-email EMAIL  bootstrap administrator e-mail
   --web-dir DIR        install the dashboard (web/ of the server archive)
   --no-start           install and configure, but do not (re)start the service
 
 Testing:
-  --root DIR           stage into DIR instead of /: no user, ownership or systemd changes
+  --root DIR           stage into DIR instead of /: no user, ownership, package or systemd changes
   --platform P         linux-amd64 or linux-arm64 (default: this machine)
   --allow-development  also trust the public DEVELOPMENT-ONLY update key (never in production)
   --help
@@ -47,7 +73,8 @@ user so it can update itself); /usr/local/bin/shorebird-server is a root-owned
 symlink to it. Missing runtime secrets (JWT_SECRET, PATCH_SIGNING_MASTER_KEY,
 DEFAULT_ADMIN_PASSWORD) are created on every run; existing values, the updater
 settings and an installed binary are never replaced. Upgrade an installed
-server through its signed self-update (docs/SELF_UPDATE.md), not this script.
+release through its signed self-update (docs/SELF_UPDATE.md), a source build by
+rerunning with --build-from-source and a newer --ref.
 HELP
 }
 
@@ -66,13 +93,32 @@ start=true
 root=
 platform=
 allow_development=false
+from_source=false
+ref=
+source_dir=
+go_root=
+want_sqlite=false
+want_postgres=false
+database_url=
+pg_socket=
+pg_port=
+skip_packages=false
+domain=
+acme_email=
+install_caddy=false
 while (($#)); do
     case "$1" in
         --help|-h) usage; exit 0 ;;
         --use-mirror) use_mirror=true; shift ;;
         --no-start) start=false; shift ;;
         --allow-development) allow_development=true; shift ;;
-        --binary|--zip|--channel|--base-url|--listen|--admin-email|--web-dir|--root|--platform)
+        --build-from-source) from_source=true; shift ;;
+        --sqlite) want_sqlite=true; shift ;;
+        --postgres) want_postgres=true; shift ;;
+        --skip-packages) skip_packages=true; shift ;;
+        --install-caddy) install_caddy=true; shift ;;
+        --binary|--zip|--channel|--base-url|--listen|--admin-email|--web-dir|--root|--platform|--ref|--source-dir|\
+        --go-root|--database-url|--pg-socket|--pg-port|--domain|--acme-email)
             (($# >= 2)) && [[ -n "$2" ]] || fail "Missing value for $1"
             case "$1" in
                 --binary) binary=$2 ;;
@@ -84,6 +130,14 @@ while (($#)); do
                 --web-dir) web_dir=$2 ;;
                 --root) root=$2 ;;
                 --platform) platform=$2 ;;
+                --ref) ref=$2 ;;
+                --source-dir) source_dir=$2 ;;
+                --go-root) go_root=$2 ;;
+                --database-url) database_url=$2 ;;
+                --pg-socket) pg_socket=$2 ;;
+                --pg-port) pg_port=$2 ;;
+                --domain) domain=$2 ;;
+                --acme-email) acme_email=$2 ;;
             esac
             shift 2 ;;
         *) fail "Unknown option: $1 (see --help)" ;;
@@ -91,6 +145,17 @@ while (($#)); do
 done
 case "$channel" in auto|stable|dev) ;; *) fail 'The channel must be auto, stable or dev.' ;; esac
 [[ -z "$binary" || -z "$zip" ]] || fail 'Pass --binary or --zip, not both.'
+if $from_source; then
+    [[ -z "$binary" && -z "$zip" ]] || fail '--build-from-source builds its own binary; drop --binary/--zip.'
+    ! $allow_development || fail '--build-from-source signs with the host key; --allow-development does not apply.'
+    [[ -z "$ref" || -z "$source_dir" ]] || fail 'Pass --ref or --source-dir, not both.'
+    ref=${ref:-main}
+else
+    [[ -z "$ref$source_dir$go_root" ]] || fail '--ref, --source-dir and --go-root need --build-from-source.'
+fi
+if [[ -z "$domain" ]] && { [[ -n "$acme_email" ]] || $install_caddy; }; then
+    fail '--acme-email and --install-caddy need --domain.'
+fi
 command -v python3 >/dev/null || fail 'python3 is required.'
 
 real() { python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"; }
@@ -105,6 +170,7 @@ payload() {
     fi
 }
 lib=$(payload install_lib.py install_lib.py)
+dependencies=$(payload install_dependencies.sh install_dependencies.sh)
 env_template=$(payload server.env.example server.env.example)
 settings_template=$(payload server-update.json server-update.json)
 unit_source=$(payload shorebird-server.service ../systemd/shorebird-server.service)
@@ -137,12 +203,44 @@ config=$root/etc/shorebird-server
 env_file=$config/server.env
 settings=$bin_dir/server-update.json
 unit=$root/etc/systemd/system/shorebird-server.service
+installer_dir=$root/var/lib/shorebird-server-installer
+host_key=$config/server-update-signing.pem
+host_trusted=$config/server-update.trusted-keys
+source_marker=$config/install-source
+initial_password=$config/initial-admin-password
+caddyfile=$root/etc/caddy/Caddyfile
+caddy_site=$root/etc/caddy/shorebird-server.caddy
 service_user=shorebird
 
 # as_service CMD...: run as the service account (the caller, when staging).
 as_service() {
     if $staging; then "$@"; else runuser -u "$service_user" -- "$@"; fi
 }
+# as_postgres CMD...: run as the PostgreSQL superuser account (the caller, when staging).
+as_postgres() {
+    if $staging; then "$@"; else runuser -u postgres -- "$@"; fi
+}
+
+# The database is decided before anything changes: a rerun never switches it.
+plan_args=(--env "$env_file")
+if $want_sqlite; then plan_args+=(--sqlite); fi
+if $want_postgres; then plan_args+=(--postgres); fi
+if [[ -n "$database_url" ]]; then plan_args+=(--database-url "$database_url"); fi
+if [[ -n "$pg_socket" ]]; then plan_args+=(--pg-socket "$pg_socket"); fi
+if [[ -n "$pg_port" ]]; then plan_args+=(--pg-port "$pg_port"); fi
+[[ ! -L "$env_file" ]] || fail "Refusing the symlink $env_file"
+db_plan=$(python3 "$lib" database-plan "${plan_args[@]}") || exit 1
+read -r db_mode db_url pg_socket pg_port <<< "$db_plan"
+[[ "$db_url" != - ]] || db_url=
+case "$db_mode" in
+    local) note "Database: local PostgreSQL (socket $pg_socket, port $pg_port, peer authentication)." ;;
+    external) note 'Database: external PostgreSQL (DATABASE_URL).' ;;
+    sqlite) note "Database: SQLite (${state#"$root"}/data/shorebird.db)." ;;
+esac
+if [[ -n "$domain" ]]; then
+    domain=$(python3 "$lib" check-domain --domain "$domain") || exit 1
+    [[ -n "$base_url" ]] || base_url=https://$domain
+fi
 
 if [[ -n "$binary" ]]; then
     [[ -f "$binary" ]] || fail "--binary $binary does not exist."
@@ -158,6 +256,21 @@ if [[ -n "$web_dir" ]]; then
     [[ -f "$web_dir/index.html" ]] || fail "--web-dir $web_dir has no index.html."
     web_dir=$(real "$web_dir")
 fi
+if [[ -n "$source_dir" ]]; then
+    [[ -d "$source_dir/.git" || -f "$source_dir/.git" ]] || fail "--source-dir $source_dir is not a git checkout."
+    source_dir=$(real "$source_dir")
+    [[ -z $(git -C "$source_dir" status --porcelain --untracked-files=no) ]] || \
+        fail "--source-dir $source_dir has uncommitted changes; commit them first."
+fi
+if [[ -n "$go_root" ]]; then
+    [[ -x "$go_root/bin/go" ]] || fail "--go-root $go_root has no bin/go."
+    go_root=$(real "$go_root")
+fi
+install_source=release
+if [[ -f "$source_marker" ]]; then install_source=$(<"$source_marker"); fi
+if $from_source && [[ -f "$target" && "$install_source" != source ]]; then
+    fail "This server was installed from a signed release; its binary trusts only the release key, so a host build cannot upgrade it. Keep upgrading through the self-update, or reinstall on a fresh host."
+fi
 
 if ! $staging; then
     for command in runuser systemctl systemd-analyze flock install useradd groupadd getent cmp; do
@@ -165,6 +278,12 @@ if ! $staging; then
     done
     exec 9>/run/lock/shorebird-server-install.lock
     flock -n 9 || fail 'Another shorebird-server installer is running.'
+    want_caddy=false
+    if [[ -n "$domain" ]] && $install_caddy; then want_caddy=true; fi
+    # shellcheck source=/dev/null
+    source "$dependencies"
+    shorebird_install_dependencies "$skip_packages" "$db_mode" "$pg_socket" "$pg_port" "$want_caddy" || \
+        fail 'Required software is missing (see above); nothing was changed.'
     if ! getent passwd "$service_user" >/dev/null; then
         getent group "$service_user" >/dev/null || groupadd --system "$service_user"
         useradd --system --gid "$service_user" --home-dir /var/lib/shorebird-server \
@@ -177,10 +296,10 @@ if ! $staging; then
     owner="$uid:$gid"
 else
     owner=
-    note "Staging into $root: no user, ownership or systemd changes."
+    note "Staging into $root: no user, ownership, package or systemd changes."
 fi
 
-for directory in "$state" "$bin_dir" "$config" "$state/data"; do
+for directory in "$state" "$bin_dir" "$config" "$state/data" "$installer_dir"; do
     [[ ! -L "$directory" ]] || fail "Refusing a symlinked deployment directory: $directory"
 done
 mkdir -p "$root/usr/local/bin" "$root/etc/systemd/system" "$root/var/lib"
@@ -197,9 +316,17 @@ fi
 # A root-owned staging directory on the same filesystem as the state.
 stage=$(mktemp -d "$root/var/lib/.shorebird-server-install.XXXXXXXX")
 stopped=false
+hba_file=
+hba_backup=
+pg() { as_postgres psql -X -w -h "$pg_socket" -p "$pg_port" -d postgres -v ON_ERROR_STOP=1 -Atqc "$1"; }
 cleanup() {
     local result=$?
     trap - EXIT
+    if [[ -n "$hba_backup" ]]; then
+        cp -p -- "$hba_backup" "$hba_file"
+        pg 'SELECT pg_reload_conf();' >/dev/null 2>&1 || true
+        note "Restored $hba_file from $hba_backup."
+    fi
     if $stopped && ((result != 0)); then
         note 'Installation failed after stopping the service; fix the cause, then: systemctl start shorebird-server'
     fi
@@ -210,15 +337,78 @@ trap cleanup EXIT
 if ! $staging; then chown "root:$service_user" "$stage"; fi
 chmod 0750 "$stage"
 
+installed_version=
+if [[ -f "$target" && ! -L "$target" ]]; then
+    installed_version=$(cd / && as_service "$target" --version 2>/dev/null) || installed_version=
+fi
+
+version=
+release_channel=
+source_label=
+upgrade_zip=
+upgrade_version=
+if $from_source; then
+    # Root-only build area: the service account must not be able to swap the
+    # toolchain or sources that root builds and signs with.
+    mkdir -p "$installer_dir"
+    chmod 0700 "$installer_dir"
+    if ! $staging; then chown root:root "$installer_dir"; fi
+    if [[ -n "$source_dir" ]]; then
+        sha=$(git -C "$source_dir" rev-parse HEAD)
+        epoch=$(git -C "$source_dir" log -1 --format=%ct HEAD)
+        ref=$(git -C "$source_dir" describe --exact-match --tags HEAD 2>/dev/null || true)
+        source_tree=$source_dir
+        python3 - "$source_tree" "$lib" <<'PY' || fail "--source-dir is not a shorebird-server source tree."
+import sys
+sys.path.insert(0, __import__("os").path.dirname(sys.argv[2]))
+import install_lib
+install_lib.check_source(sys.argv[1])
+PY
+    else
+        read -r sha epoch < <(python3 "$lib" resolve-ref --ref "$ref") || fail "Cannot resolve --ref $ref on GitHub."
+        source_tree=$stage/source
+        python3 "$lib" fetch-source --sha "$sha" --dir "$source_tree" || fail 'The source download failed.'
+    fi
+    version=$(python3 "$lib" source-version --source "$source_tree" --sha "$sha" --epoch "$epoch" \
+        --ref "$ref" --installed "$installed_version") || exit 1
+    note "Source ${ref:-$sha} (${sha:0:12}) builds shorebird-server $version."
+    order=1
+    if [[ -n "$installed_version" ]]; then order=$(python3 "$lib" compare "$version" "$installed_version") || exit 1; fi
+    if ((order == 0)); then
+        note "shorebird-server $version is already installed; nothing to build."
+        version=
+    elif ((order < 0)); then
+        fail "$version is older than the installed $installed_version; downgrade through the self-update rollback instead (docs/SELF_UPDATE.md)."
+    else
+        python3 "$lib" host-key --key "$host_key" --trusted "$host_trusted" >/dev/null || \
+            fail 'The host update signing key is unusable (see above).'
+        expected_go=$(python3 "$lib" go-version --go-mod "$source_tree/go.mod") || exit 1
+        if [[ -n "$go_root" ]]; then
+            goroot=$go_root
+            expected_go=
+        else
+            mkdir -p "$installer_dir/toolchains"
+            goroot=$(python3 "$lib" go-toolchain --go-mod "$source_tree/go.mod" --dir "$installer_dir/toolchains" \
+                --platform "$platform") || fail 'The Go toolchain download or verification failed.'
+        fi
+        python3 "$lib" build --source "$source_tree" --goroot "$goroot" --expected-go "$expected_go" \
+            --work "$installer_dir/work" --key "$host_key" --trusted "$host_trusted" --platform "$platform" \
+            --version "$version" --epoch "$epoch" --output "$stage/update.zip" || fail 'The build failed; nothing was installed.'
+        read -r version release_channel < <(python3 "$lib" verify-zip --trusted-keys-file "$host_trusted" \
+            --platform "$platform" --output "$stage/server" --zip "$stage/update.zip") || \
+            fail 'The built update failed verification; nothing was installed.'
+        source_label="source ${sha:0:12}"
+    fi
+fi
+
 verify_args=(--trusted-keys-file "$trusted_keys" --platform "$platform" --output "$stage/server")
 if $allow_development; then
     verify_args+=(--allow-development)
     note 'WARNING: the public DEVELOPMENT-ONLY update key is trusted (testing only).'
 fi
-version=
-release_channel=
-source_label=
-if [[ -n "$zip" ]]; then
+if [[ -n "$source_label" ]]; then
+    :
+elif [[ -n "$zip" ]]; then
     read -r version release_channel < <(python3 "$lib" verify-zip "${verify_args[@]}" --zip "$zip") || \
         fail 'The update ZIP failed verification; nothing was installed.'
     source_label="$zip"
@@ -229,7 +419,10 @@ elif [[ -n "$binary" ]]; then
     source_label="$binary"
 elif [[ -f "$target" && ! -L "$target" ]]; then
     cp -- "$target" "$stage/server"
+    version=
     source_label="installed $target"
+elif $from_source; then
+    fail 'Nothing to install.'
 else
     download_args=("${verify_args[@]}" --channel "$channel")
     if $use_mirror; then download_args+=(--use-mirror); fi
@@ -241,7 +434,16 @@ fi
 
 [[ ! -L "$target" ]] || fail "The managed binary $target must be a regular file, not a symlink."
 if [[ -f "$target" ]] && ! cmp -s -- "$stage/server" "$target"; then
-    fail "A different managed binary is already installed ($(as_service "$target" --version 2>/dev/null || echo unknown)). Upgrade through the signed self-update: GET/POST /api/v1/admin/server/update (docs/SELF_UPDATE.md)."
+    if ! $from_source; then
+        fail "A different managed binary is already installed (${installed_version:-unknown}). Upgrade through the signed self-update: GET/POST /api/v1/admin/server/update (docs/SELF_UPDATE.md)."
+    fi
+    # Host build of a newer version: the running server installs it through
+    # its own transaction (trial, watchdog rollback, quarantine) at the end.
+    upgrade_zip=$stage/update.zip
+    upgrade_version=$version
+    cp -- "$target" "$stage/server"
+    version=
+    source_label="installed $target (upgrade to $upgrade_version follows)"
 fi
 if [[ -L "$entry" ]]; then
     [[ $(readlink "$entry") == "${target#"$root"}" ]] || fail "$entry is a symlink to another file; remove it first."
@@ -258,23 +460,36 @@ fi
 version=$probe
 note "Verified shorebird-server $version ($source_label)."
 
+default_listen=
+if [[ -n "$domain" ]]; then default_listen=127.0.0.1:8080; fi
+db_driver=postgres
+if [[ "$db_mode" == sqlite ]]; then db_driver=sqlite; fi
 python3 "$lib" environment --template "$env_template" --output "$env_file" \
-    --state-dir "${state#"$root"}" --base-url "$base_url" --listen "$listen" \
-    --admin-email "$admin_email" --owner "${owner:+0:$gid}" >/dev/null
-port=$(python3 - "$env_file" <<'PY'
+    --state-dir "${state#"$root"}" --base-url "$base_url" --listen "$listen" --default-listen "$default_listen" \
+    --admin-email "$admin_email" --owner "${owner:+0:$gid}" --db-driver "$db_driver" --db-url "$db_url" \
+    --reveal "$stage/admin-password" >/dev/null
+read -r listen_host port admin_address public_url < <(python3 - "$env_file" <<'PY'
 import shlex, sys
-port = "8080"
+values = {}
 for line in open(sys.argv[1], encoding="utf-8"):
     key, _, value = line.strip().partition("=")
-    if key == "SERVER_PORT" and value:
-        port = (shlex.split(value) or ["8080"])[0]
-print(port)
+    if key and not key.startswith("#"):
+        values[key] = (shlex.split(value) or [""])[0]
+print(values.get("SERVER_HOST") or "0.0.0.0", values.get("SERVER_PORT") or "8080",
+      values.get("DEFAULT_ADMIN_EMAIL") or "-", values.get("SERVER_BASE_URL") or "-")
 PY
 )
+case "$listen_host" in
+    0.0.0.0|"") local_host=127.0.0.1 ;;
+    ::|"[::]") local_host='[::1]' ;;
+    *:*) local_host="[$listen_host]" ;;
+    *) local_host=$listen_host ;;
+esac
+local_url=http://$local_host:$port
 
 if [[ ! -e "$settings" ]]; then
     settings_channel=stable
-    if [[ "$release_channel" == dev || "$channel" == dev ]]; then settings_channel=dev; fi
+    if [[ "$release_channel" == dev || "$channel" == dev || "$version" == *-* ]]; then settings_channel=dev; fi
     python3 "$lib" update-settings --template "$settings_template" --output "$stage/server-update.json" \
         --channel "$settings_channel" --use-mirror "$use_mirror" --display "$settings"
     if $staging; then
@@ -288,6 +503,53 @@ else
     note "$settings: kept (administrator settings are never replaced)."
 fi
 
+if [[ "$db_mode" == local ]]; then
+    note 'Configuring the local PostgreSQL...'
+    if ! $staging && systemctl list-unit-files postgresql.service >/dev/null 2>&1; then
+        systemctl enable --now postgresql >/dev/null 2>&1 || true
+    fi
+    ready=false
+    attempts=30
+    if $staging; then attempts=3; fi
+    for ((attempt = 0; attempt < attempts; attempt++)); do
+        if pg 'SELECT 1;' >/dev/null 2>&1; then ready=true; break; fi
+        sleep 1
+    done
+    $ready || fail "PostgreSQL does not answer on $pg_socket port $pg_port; start it, or pass --pg-socket/--pg-port, --database-url or --sqlite."
+    if [[ $(pg "SELECT count(*) FROM pg_roles WHERE rolname='shorebird';") == 0 ]]; then
+        as_postgres createuser -w -h "$pg_socket" -p "$pg_port" --no-superuser --no-createdb --no-createrole shorebird
+        note 'Created the PostgreSQL role shorebird (no password; peer authentication).'
+    fi
+    [[ $(pg "SELECT rolcanlogin AND NOT (rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls) FROM pg_roles WHERE rolname='shorebird';") == t ]] || \
+        fail 'The existing PostgreSQL role shorebird is not a restricted login role; review it manually.'
+    if [[ $(pg "SELECT count(*) FROM pg_database WHERE datname='shorebird';") == 0 ]]; then
+        as_postgres createdb -w -h "$pg_socket" -p "$pg_port" --owner=shorebird shorebird
+        note 'Created the PostgreSQL database shorebird.'
+    fi
+    [[ $(pg "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='shorebird';") == shorebird ]] || \
+        fail 'The existing database shorebird has another owner; refusing to change it.'
+    [[ $(pg 'SELECT count(*) FROM pg_hba_file_rules WHERE error IS NOT NULL;') == 0 ]] || \
+        fail 'The existing pg_hba.conf has errors; fix them first.'
+    hba_file=$(pg 'SHOW hba_file;')
+    hba_backup=$(python3 "$lib" hba --output "$hba_file") || fail "Cannot update $hba_file."
+    if [[ -n "$hba_backup" ]]; then
+        note "Added the shorebird peer rule to $hba_file (backup: $hba_backup)."
+        [[ $(pg 'SELECT count(*) FROM pg_hba_file_rules WHERE error IS NOT NULL;') == 0 ]] || \
+            fail 'pg_hba.conf validation failed; restoring the backup.'
+        [[ $(pg 'SELECT pg_reload_conf();') == t ]] || fail 'PostgreSQL reload failed; restoring the backup.'
+    fi
+    ready=false
+    for ((attempt = 0; attempt < 10; attempt++)); do
+        if [[ $(cd / && as_service psql -X -w -h "$pg_socket" -p "$pg_port" -d shorebird -Atqc \
+            "SELECT current_user='shorebird' AND inet_client_addr() IS NULL;" 2>/dev/null) == t ]]; then
+            ready=true; break
+        fi
+        sleep 1
+    done
+    $ready || fail 'The service account cannot reach PostgreSQL with peer authentication; restoring pg_hba.conf.'
+    hba_backup=  # verified: the backup stays on disk, no automatic restore any more
+fi
+
 if ! $staging && systemctl is-active --quiet shorebird-server; then
     systemctl stop shorebird-server
     stopped=true
@@ -296,6 +558,10 @@ if [[ ! -e "$target" ]]; then
     as_service install -m 0755 "$stage/server" "$target"
     printf '%s\n' "$version" | as_service tee "$bin_dir/VERSION" >/dev/null
     note "Installed $target."
+    install_source=release
+    if $from_source; then install_source=source; fi
+    printf '%s\n' "$install_source" > "$source_marker"
+    chmod 0644 "$source_marker"
 else
     note "$target: unchanged."
 fi
@@ -320,9 +586,103 @@ if ! cmp -s "$unit" "$unit_source" 2>/dev/null; then
     chmod 0644 "$unit"
     note "Installed $unit."
 fi
+if [[ -s "$stage/admin-password" && ! -e "$initial_password" ]]; then
+    cp -- "$stage/admin-password" "$initial_password"
+    chmod 0600 "$initial_password"
+    if ! $staging; then chown root:root "$initial_password"; fi
+fi
+
+# Reverse proxy: Caddy with automatic HTTPS for --domain.
+proxy_note=
+if [[ -n "$domain" ]]; then
+    upstream=$local_host:$port
+    if command -v caddy >/dev/null 2>&1 || $staging; then
+        caddy_backups=$(python3 "$lib" caddy --domain "$domain" --upstream "$upstream" --acme-email "$acme_email" \
+            --caddyfile "$caddyfile" --site-file "$caddy_site" --import-path "${caddy_site#"$root"}") || \
+            fail 'Writing the Caddy configuration failed.'
+        if ! $staging; then
+            if ! caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >"$stage/caddy.log" 2>&1; then
+                while IFS= read -r backup; do
+                    [[ -n "$backup" ]] && cp -p -- "$backup" "${backup%.before-shorebird-*}"
+                done <<< "$caddy_backups"
+                cat "$stage/caddy.log" >&2
+                fail 'The Caddy configuration does not validate; the previous files were restored.'
+            fi
+            systemctl enable caddy >/dev/null 2>&1 || true
+            if systemctl is-active --quiet caddy; then systemctl reload caddy; else systemctl start caddy; fi
+        fi
+        proxy_note="Caddy serves https://$domain -> $upstream (${caddy_site#"$root"}); open TCP 80 and 443."
+    else
+        proxy_note="Caddy is not installed: rerun with --install-caddy, or point your reverse proxy at $upstream:
+    Caddy:  $domain { reverse_proxy $upstream }      (in /etc/caddy/Caddyfile)
+    nginx:  server { listen 443 ssl; server_name $domain; client_max_body_size 1g;
+                     location / { proxy_pass http://$upstream; proxy_set_header Host \$host;
+                                  proxy_set_header X-Forwarded-Proto \$scheme; } }
+  Then open TCP 80 and 443 and point the DNS name $domain at this host."
+    fi
+fi
+
+summary() {
+    local status=$1 password_line database_line backup_db
+    if [[ -s "$stage/admin-password" ]]; then
+        password_line="$(<"$stage/admin-password")   <- shown once; also in ${initial_password#"$root"} (root, 0600)"
+    elif [[ -f "$initial_password" ]]; then
+        password_line="(not shown again) see ${initial_password#"$root"} if it was never changed"
+    else
+        password_line="(not shown) DEFAULT_ADMIN_PASSWORD in ${env_file#"$root"} if it was never changed"
+    fi
+    case "$db_mode" in
+        local) database_line="PostgreSQL database shorebird, local socket $pg_socket:$pg_port, peer auth (no password)"
+               backup_db="sudo -u postgres pg_dump -Fc shorebird > shorebird-\$(date +%F).dump" ;;
+        external) database_line='PostgreSQL at DATABASE_URL (external)'
+                  backup_db="your provider's backups, or: pg_dump -Fc \"\$DATABASE_URL\" > shorebird.dump" ;;
+        *) database_line="SQLite ${state#"$root"}/data/shorebird.db (small installs only)"
+           backup_db="stop the service and copy ${state#"$root"}/data/shorebird.db*" ;;
+    esac
+    cat >&2 <<EOF
+
+==== shorebird-server $version: $status ====
+Public URL:      ${public_url}
+Local check:     curl $local_url/health
+Admin e-mail:    ${admin_address}
+Admin password:  ${password_line}
+                 The password must be changed at the first login.
+Database:        ${database_line}
+Service:         systemctl status shorebird-server | journalctl -u shorebird-server -f
+Configuration:   ${env_file#"$root"} (secrets, root:shorebird 0640)
+EOF
+    if $from_source || [[ "$install_source" == source ]]; then
+        cat >&2 <<EOF
+Update key:      ${host_key#"$root"} (root 0600, signs this host's builds) and ${host_trusted#"$root"}
+Upgrade:         rerun with --build-from-source --ref NEWER (the server installs it on trial
+                 and rolls back automatically); GitHub releases are not trusted by this build.
+EOF
+    else
+        cat >&2 <<EOF
+Upgrade:         GET/POST /api/v1/admin/server/update (signed GitHub releases, docs/SELF_UPDATE.md)
+EOF
+    fi
+    cat >&2 <<EOF
+Back up:         ${config#"$root"}/ (server.env holds PATCH_SIGNING_MASTER_KEY: without it the
+                 patch signing keys in the database are lost), ${state#"$root"}/data/ (storage),
+                 and the database: ${backup_db}
+Connect the CLI: export SHOREBIRD_HOSTED_URL=${public_url}; shorebird login
+                 (CI: SHOREBIRD_TOKEN=<sb_api_ key>); set base_url: ${public_url} in shorebird.yaml
+EOF
+    if [[ -n "$proxy_note" ]]; then printf 'Proxy:           %s\n' "$proxy_note" >&2; fi
+}
+
+run_upgrade() {
+    [[ -n "$upgrade_zip" ]] || return 0
+    read -r version _ < <(python3 "$lib" local-update --zip "$upgrade_zip" --url "$local_url" --bin-dir "$bin_dir" \
+        --version "$upgrade_version") || fail "The upgrade to $upgrade_version did not complete (the running version is unchanged unless the log says otherwise)."
+    note "Upgraded to $version; it is on trial and rolls back automatically if it fails."
+}
 
 if $staging; then
+    run_upgrade
     note "Staged shorebird-server $version into $root."
+    summary staged
     exit 0
 fi
 systemd-analyze verify "$unit"
@@ -330,22 +690,15 @@ systemctl daemon-reload
 if ! $start; then
     systemctl enable shorebird-server >/dev/null
     stopped=false
-    note "Installed shorebird-server $version; not started (--no-start). Start it with: systemctl start shorebird-server"
+    summary 'installed, not started (--no-start); start it with: systemctl start shorebird-server'
     exit 0
 fi
 systemctl enable --now shorebird-server
 stopped=false
-python3 "$lib" health --url "http://127.0.0.1:$port/health" --seconds 120 || \
+python3 "$lib" health --url "$local_url/health" --seconds 120 || \
     fail 'The service did not become healthy. Inspect: journalctl -u shorebird-server -n 100'
-cat >&2 <<EOF
-
-Installed shorebird-server $version; http://127.0.0.1:$port/health is healthy.
-Configuration:   $env_file (secrets are created only when missing)
-Update settings: $settings
-Bootstrap admin: read DEFAULT_ADMIN_EMAIL/DEFAULT_ADMIN_PASSWORD privately from $env_file;
-                 the password must be changed at the first login.
-Self-update:     GET /api/v1/admin/server/update must report mode "active".
-EOF
+run_upgrade
+summary "running, $local_url/health is healthy"
 SHOREBIRD_SERVER_INSTALL_PAYLOAD_0_END
     cat > "$bundle/install_lib.py" <<'SHOREBIRD_SERVER_INSTALL_PAYLOAD_1_END'
 #!/usr/bin/env python3
@@ -371,6 +724,7 @@ import secrets
 import shlex
 import shutil
 import socket
+import subprocess
 import sys
 import tempfile
 import time
@@ -651,32 +1005,51 @@ def verify_zip(path, platform, trusted, output):
 # Release download (GitHub, optional untrusted mirror)
 
 
-def allowed_url(url):
+GITHUB_HOSTS = ("github.com", "api.github.com", "codeload.github.com")
+GO_HOSTS = ("go.dev", "dl.google.com")
+
+
+def allowed_url(url, hosts=None):
     parsed = urllib.parse.urlsplit(url)
     host = parsed.hostname or ""
-    return (parsed.scheme == "https" and parsed.username is None and parsed.password is None
-            and (host in ("github.com", "api.github.com", urllib.parse.urlsplit(MIRROR).hostname)
-                 or host.endswith(".githubusercontent.com")))
+    if parsed.scheme != "https" or parsed.username is not None or parsed.password is not None:
+        return False
+    if hosts is not None:
+        return host in hosts
+    return (host in GITHUB_HOSTS or host == urllib.parse.urlsplit(MIRROR).hostname
+            or host.endswith(".githubusercontent.com"))
 
 
 class _Redirects(urllib.request.HTTPRedirectHandler):
+    def __init__(self, hosts=None):
+        super().__init__()
+        self.hosts = hosts
+
     def redirect_request(self, request, fp, code, message, headers, new_url):
-        if not allowed_url(new_url):
-            raise InstallError("release redirect refused")
+        if not allowed_url(new_url, self.hosts):
+            raise InstallError("redirect refused")
         return super().redirect_request(request, fp, code, message, headers, new_url)
 
 
-def download(url, destination, limit, use_mirror, opener=None):
-    if not allowed_url(url):
-        raise InstallError("release URL refused")
-    mirrored = MIRROR + url[len("https://"):]
-    targets = [mirrored, url] if use_mirror else [url, mirrored]
-    opener = opener or urllib.request.build_opener(_Redirects())
+def download(url, destination, limit, use_mirror, opener=None, *, hosts=None, seconds=300, accept=None):
+    """Downloads `url` (GitHub, or `hosts`) with size and time limits. GitHub URLs
+    fall back to (or, with use_mirror, start at) the untrusted mirror; whatever
+    arrives is verified by the caller."""
+    if not allowed_url(url, hosts):
+        raise InstallError("download URL refused")
+    targets = [url]
+    if hosts is None:
+        mirrored = MIRROR + url[len("https://"):]
+        targets = [mirrored, url] if use_mirror else [url, mirrored]
+    opener = opener or urllib.request.build_opener(_Redirects(hosts))
     last = None
     for target in targets:
         try:
-            request = urllib.request.Request(target, headers={"User-Agent": "shorebird-server-installer"})
-            deadline = time.monotonic() + 300
+            headers = {"User-Agent": "shorebird-server-installer"}
+            if accept:
+                headers["Accept"] = accept
+            request = urllib.request.Request(target, headers=headers)
+            deadline = time.monotonic() + seconds
             with opener.open(request, timeout=30) as response, open(destination, "wb") as output:
                 size = 0
                 while True:
@@ -690,7 +1063,7 @@ def download(url, destination, limit, use_mirror, opener=None):
         except (OSError, urllib.error.URLError, InstallError, ValueError) as error:
             last = error
             Path(destination).unlink(missing_ok=True)
-    raise InstallError(f"download failed through GitHub and the mirror: {last}")
+    raise InstallError(f"download of {url} failed: {last}")
 
 
 def select_release(releases, channel, asset):
@@ -819,8 +1192,12 @@ def base_url(value):
     return value.rstrip("/")
 
 
-def prepare_environment(template, output, state_dir, *, base=None, listen=None, admin_email=None, owner=None):
-    """Creates missing secrets and settings; existing values are never replaced."""
+def prepare_environment(template, output, state_dir, *, base=None, listen=None, admin_email=None, owner=None,
+                        default_listen=None, db_driver=None, db_url=None, reveal=None):
+    """Creates missing secrets and settings; existing values are never replaced.
+    The database is set on a new file (or where it is missing): database_plan()
+    already refused every switch. A generated administrator password is also
+    written to `reveal` (0600, created once) so the installer can show it."""
     output = Path(output)
     if output.is_symlink():
         raise InstallError(f"refusing the symlink {output}")
@@ -831,7 +1208,7 @@ def prepare_environment(template, output, state_dir, *, base=None, listen=None, 
     changes = {}
     created = []
     if not existing or listen:
-        host, port = listen_address(listen or "0.0.0.0:8080")
+        host, port = listen_address(listen or default_listen or "0.0.0.0:8080")
         changes.update(SERVER_HOST=host, SERVER_PORT=port)
     port = changes.get("SERVER_PORT") or values.get("SERVER_PORT") or "8080"
     if not existing or base:
@@ -840,6 +1217,10 @@ def prepare_environment(template, output, state_dir, *, base=None, listen=None, 
         if not re.fullmatch(r"[^@\s]+@[^@\s]+", admin_email):
             raise InstallError("--admin-email is not an e-mail address")
         changes["DEFAULT_ADMIN_EMAIL"] = admin_email
+    if db_driver and (not existing or not values.get("DB_DRIVER")):
+        changes["DB_DRIVER"] = db_driver
+    if db_url and (not existing or not values.get("DATABASE_URL")):
+        changes["DATABASE_URL"] = db_url
     # Secrets: created when missing (or a known insecure default); never replaced.
     generators = {
         "JWT_SECRET": lambda: secrets.token_hex(32),
@@ -877,6 +1258,10 @@ def prepare_environment(template, output, state_dir, *, base=None, listen=None, 
         atomic_write(output, result, 0o640, uid, gid)
     for name in created:
         say(f"Created {name} in {output} (value not shown)")
+    if reveal and "DEFAULT_ADMIN_PASSWORD" in created:
+        fd = os.open(reveal, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(changes["DEFAULT_ADMIN_PASSWORD"] + "\n")
     for note in notes:
         say("NOTE: " + note)
     if not changed:
@@ -910,6 +1295,586 @@ def wait_healthy(url, seconds):
             pass
         time.sleep(1)
     return False
+
+
+# ---------------------------------------------------------------------------
+# Database (PostgreSQL by default, docs: deploy/linux/README.md "Database")
+
+POSTGRES_DRIVERS = ("postgres", "postgresql", "pg")
+DB_NAME = "shorebird"
+DB_ROLE = "shorebird"
+HBA_BEGIN = "# BEGIN shorebird-server (managed by deploy/linux/install.sh)"
+HBA_END = "# END shorebird-server"
+
+
+def local_database_url(socket_dir, port):
+    """Unix-socket URL with peer authentication: no password exists."""
+    return (f"postgres:///{DB_NAME}?host={socket_dir}&port={port}&user={DB_ROLE}"
+            "&sslmode=disable&connect_timeout=5")
+
+
+def parse_local_database_url(url):
+    """(socket dir, port) when `url` is the installer's local socket URL, else None."""
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in ("postgres", "postgresql") or parsed.netloc or parsed.path != f"/{DB_NAME}":
+        return None
+    query = dict(urllib.parse.parse_qsl(parsed.query))
+    host = query.get("host", "")
+    if not host.startswith("/") or query.get("user") != DB_ROLE:
+        return None
+    return host, query.get("port", "5432")
+
+
+def check_socket_dir(value):
+    if not re.fullmatch(r"/[A-Za-z0-9_./-]+", value or "") or "/../" in value + "/":
+        raise InstallError("--pg-socket expects an absolute directory without spaces")
+    return value.rstrip("/") or "/"
+
+
+def check_port(value):
+    if not str(value).isdigit() or not 0 < int(value) < 65536:
+        raise InstallError("--pg-port expects 1-65535")
+    return str(int(value))
+
+
+def check_external_url(url):
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in ("postgres", "postgresql") or any(c.isspace() for c in url) or "'" in url:
+        raise InstallError("--database-url expects postgres://USER:PASSWORD@HOST:PORT/DATABASE?sslmode=...")
+    return url
+
+
+def database_plan(env_path, *, sqlite=False, postgres=False, url="", socket_dir="", port=""):
+    """(mode, url, socket dir, port): mode is local, external or sqlite.
+
+    A new install uses a local PostgreSQL unless told otherwise. An existing
+    install keeps its database; switching between SQLite and PostgreSQL (or to
+    another database) is refused, never done silently: it would start an empty
+    server next to the old data.
+    """
+    if sum(map(bool, (sqlite, postgres, url))) > 1:
+        raise InstallError("pass only one of --sqlite, --postgres and --database-url")
+    explicit_socket = check_socket_dir(socket_dir) if socket_dir else None
+    explicit_port = check_port(port) if port else None
+    if url:
+        check_external_url(url)
+        if explicit_socket or explicit_port:
+            raise InstallError("--pg-socket/--pg-port select the local PostgreSQL; drop them with --database-url")
+    env_path = Path(env_path)
+    if not env_path.exists():
+        if sqlite:
+            return "sqlite", "", "", ""
+        if url:
+            return "external", url, "", ""
+        socket_dir, port = explicit_socket or "/var/run/postgresql", explicit_port or "5432"
+        return "local", local_database_url(socket_dir, port), socket_dir, port
+    values = env_values(env_path.read_text(encoding="utf-8"))
+    driver = (values.get("DB_DRIVER") or "sqlite").lower()
+    migrate = "see deploy/linux/README.md, \"Database\""
+    if driver in POSTGRES_DRIVERS:
+        current = values.get("DATABASE_URL", "")
+        if sqlite:
+            raise InstallError("this server already uses PostgreSQL (DB_DRIVER in server.env); refusing to switch "
+                               f"to SQLite, which would start an empty server ({migrate})")
+        local = parse_local_database_url(current)
+        if local:
+            if url and url != current:
+                raise InstallError("this server uses the local PostgreSQL; refusing to switch to --database-url "
+                                   f"({migrate})")
+            if (explicit_socket and explicit_socket != local[0]) or (explicit_port and explicit_port != local[1]):
+                raise InstallError(f"this server uses the local PostgreSQL at {local[0]} port {local[1]}; "
+                                   "refusing another --pg-socket/--pg-port")
+            return "local", current, local[0], local[1]
+        if not current:
+            raise InstallError("server.env selects PostgreSQL but has no DATABASE_URL; set it, then rerun")
+        if postgres or explicit_socket or explicit_port:
+            raise InstallError("this server uses an external PostgreSQL (DATABASE_URL); refusing to switch to a "
+                               f"local one ({migrate})")
+        if url and url != current:
+            raise InstallError("this server already has another DATABASE_URL; edit server.env yourself to move "
+                               "it (the installer never replaces it)")
+        return "external", current, "", ""
+    if driver != "sqlite":
+        raise InstallError(f"server.env has an unknown DB_DRIVER {driver!r}")
+    if postgres or url or explicit_socket or explicit_port:
+        raise InstallError("this server already stores its data in SQLite; switching to PostgreSQL is not "
+                           f"automated and would start an empty server ({migrate}). Rerun without "
+                           "database options to keep SQLite")
+    return "sqlite", "", "", ""
+
+
+def hba_text(text):
+    """pg_hba.conf with exactly one managed peer rule block at the top: the first
+    matching rule wins, so a broader password rule cannot shadow it."""
+    if HBA_BEGIN in text or HBA_END in text:
+        if text.count(HBA_BEGIN) != 1 or text.count(HBA_END) != 1:
+            raise InstallError("malformed shorebird-server markers in pg_hba.conf; review it")
+        start, end = text.index(HBA_BEGIN), text.index(HBA_END) + len(HBA_END)
+        if end <= start:
+            raise InstallError("malformed shorebird-server marker order in pg_hba.conf")
+        rest = text[end:]
+        text = text[:start] + (rest[1:] if rest.startswith("\n") else rest)
+    return f"{HBA_BEGIN}\nlocal   {DB_NAME}   {DB_ROLE}   peer\n{HBA_END}\n" + text
+
+
+def update_hba(path):
+    """Prepends the managed rule; returns the backup path ("" when unchanged)."""
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise InstallError(f"{path} is not a regular file")
+    original = path.read_text(encoding="utf-8")
+    wanted = hba_text(original)
+    if wanted == original:
+        return ""
+    info = path.stat()
+    backup = path.with_name(path.name + f".before-shorebird-{time.time_ns()}")
+    shutil.copy2(path, backup)
+    uid, gid = (info.st_uid, info.st_gid) if os.geteuid() == 0 else (None, None)
+    atomic_write(path, wanted.encode("utf-8"), info.st_mode & 0o777, uid, gid)
+    return str(backup)
+
+
+# ---------------------------------------------------------------------------
+# Reverse proxy (Caddy, automatic HTTPS)
+
+CADDY_MARK = "# Managed by shorebird-server deploy/linux/install.sh; rerun it to change this file."
+STOCK_CADDYFILE = re.compile(r"\A(?:\s*#[^\n]*\n|\s*\n)*:80\s*\{[^{}]*root\s+\*\s+/usr/share/caddy[^{}]*\}\s*"
+                             r"(?:#[^\n]*\n?|\s)*\Z")
+
+
+def check_domain(name):
+    if (not re.fullmatch(r"(?=.{1,253}\Z)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}", name or "")):
+        raise InstallError("--domain expects a DNS name such as patch.example.com")
+    return name.lower()
+
+
+def caddy_site(domain, upstream, email):
+    lines = [CADDY_MARK, f"{domain} {{"]
+    if email:
+        lines.append(f"\ttls {email}")
+    lines += ["\tencode zstd gzip", f"\treverse_proxy {upstream}", "}"]
+    return "\n".join(lines) + "\n"
+
+
+def write_caddy(domain, upstream, email, caddyfile, site_file, import_path=None):
+    """Writes the site file and makes the Caddyfile import it. A stock
+    distribution Caddyfile (the :80 welcome page) is replaced, any other one
+    gets a single import line; every changed file is backed up first.
+    Prints the backups (one per line) for the caller's restore."""
+    check_domain(domain)
+    if email and not re.fullmatch(r"[^@\s]+@[^@\s]+", email):
+        raise InstallError("--acme-email is not an e-mail address")
+    caddyfile, site_file = Path(caddyfile), Path(site_file)
+    backups = []
+
+    def put(path, text):
+        if path.is_symlink():
+            raise InstallError(f"refusing the symlink {path}")
+        if path.exists():
+            if path.read_text(encoding="utf-8") == text:
+                return
+            backup = path.with_name(path.name + f".before-shorebird-{time.time_ns()}")
+            shutil.copy2(path, backup)
+            backups.append(str(backup))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write(path, text.encode("utf-8"), 0o644)
+    if site_file.exists() and CADDY_MARK not in site_file.read_text(encoding="utf-8"):
+        raise InstallError(f"{site_file} was not written by this installer; move it aside first")
+    put(site_file, caddy_site(domain, upstream, email))
+    line = f"import {import_path or site_file}"
+    current = caddyfile.read_text(encoding="utf-8") if caddyfile.exists() else ""
+    if not current.strip() or STOCK_CADDYFILE.match(current):
+        put(caddyfile, f"{CADDY_MARK}\n{line}\n")
+    elif not any(entry.strip() == line for entry in current.splitlines()):
+        put(caddyfile, current.rstrip("\n") + f"\n\n# shorebird-server (deploy/linux/install.sh)\n{line}\n")
+    return backups
+
+
+# ---------------------------------------------------------------------------
+# Build from source (install.sh --build-from-source)
+
+SOURCE_REPOSITORY = REPOSITORY
+PKCS8_ED25519 = bytes.fromhex("302e020100300506032b657004220420")
+MAX_SOURCE = 256 << 20
+MAX_GO = 512 << 20
+
+
+def ed25519_public(seed):
+    digest = hashlib.sha512(seed).digest()
+    scalar = int.from_bytes(digest[:32], "little") & ((1 << 254) - 8) | (1 << 254)
+    x, y, z, _ = _mul(scalar, _G)
+    inverse = pow(z, _P - 2, _P)
+    x, y = x * inverse % _P, y * inverse % _P
+    return int.to_bytes(y | ((x & 1) << 255), 32, "little")
+
+
+def read_private_key(path):
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise InstallError(f"{path} is not a regular file")
+    if path.stat().st_mode & 0o077:
+        raise InstallError(f"{path} is readable by group or others; run: chmod 600 {path}")
+    lines = path.read_text(encoding="ascii").strip().splitlines()
+    if len(lines) < 3 or lines[0] != "-----BEGIN PRIVATE KEY-----" or lines[-1] != "-----END PRIVATE KEY-----":
+        raise InstallError(f"{path} is not a PKCS#8 PEM private key")
+    try:
+        der = base64.b64decode("".join(lines[1:-1]), validate=True)
+    except ValueError:
+        raise InstallError(f"{path} is not a PKCS#8 PEM private key") from None
+    if len(der) != 48 or not der.startswith(PKCS8_ED25519):
+        raise InstallError(f"{path} is not an Ed25519 key")
+    return der[16:]
+
+
+def host_key(key_path, trusted_path):
+    """The host's update signing key: created once (0600), never replaced. The
+    public key is written to `trusted_path` (the pin of every binary built on
+    this host). Returns the base64 public key."""
+    key_path, trusted_path = Path(key_path), Path(trusted_path)
+    if key_path.is_symlink() or trusted_path.is_symlink():
+        raise InstallError("refusing a symlinked update key file")
+    if not key_path.exists():
+        if trusted_path.exists():
+            raise InstallError(f"{trusted_path} exists without {key_path}; restore the key from your backup "
+                               "(binaries built here trust only that key), or move both aside for a new install")
+        seed = secrets.token_bytes(32)
+        pem = ("-----BEGIN PRIVATE KEY-----\n" + base64.b64encode(PKCS8_ED25519 + seed).decode("ascii")
+               + "\n-----END PRIVATE KEY-----\n")
+        fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="ascii") as stream:
+            stream.write(pem)
+            stream.flush()
+            os.fsync(stream.fileno())
+        say(f"Created the host update signing key {key_path} (0600; back it up)")
+    public = base64.b64encode(ed25519_public(read_private_key(key_path))).decode("ascii")
+    text = ("# shorebird-server update key of this host (public). install.sh --build-from-source pins it\n"
+            f"# into every binary it builds; the private key is {key_path}.\n{public}\n")
+    if trusted_path.exists():
+        pinned = [line.split("#", 1)[0].strip() for line in trusted_path.read_text(encoding="ascii").splitlines()]
+        if [entry for entry in pinned if entry] != [public]:
+            raise InstallError(f"{trusted_path} does not hold the public key of {key_path}; restore the pair")
+    else:
+        atomic_write(trusted_path, text.encode("ascii"), 0o644)
+    return public
+
+
+def go_version(go_mod):
+    """The toolchain go.mod asks for (`toolchain goX`, else `go X`)."""
+    text = Path(go_mod).read_text(encoding="utf-8")
+    toolchain = re.search(r"^toolchain\s+(go[0-9][0-9A-Za-z.]*)\s*$", text, re.M)
+    if toolchain:
+        return toolchain.group(1)
+    language = re.search(r"^go\s+([0-9]+\.[0-9]+(?:\.[0-9]+)?)\s*$", text, re.M)
+    if not language:
+        raise InstallError(f"{go_mod} names no Go version")
+    return "go" + language.group(1)
+
+
+def safe_extract(archive_path, destination, *, strip_root=False, limit=MAX_GO * 4):
+    """Extracts a tar.gz without links, devices or paths leaving `destination`
+    (Python 3.8 has no tar filters). Symbolic and hard links are skipped (the
+    sources and the Go distribution build without them). Returns (top-level
+    directory, skipped links)."""
+    import tarfile
+    destination = Path(destination)
+    destination.mkdir(parents=True)
+    total = 0
+    skipped = 0
+    root = None
+    with tarfile.open(archive_path, "r:gz") as archive:
+        for member in archive:
+            name = member.name
+            parts = Path(name).parts
+            if name.startswith("/") or ".." in parts or not parts:
+                raise InstallError(f"unsafe archive entry {name!r}")
+            if root is None:
+                root = parts[0]
+            if parts[0] != root:
+                raise InstallError("the archive has more than one top-level directory")
+            if strip_root:
+                parts = parts[1:]
+                if not parts:
+                    continue
+            target = destination.joinpath(*parts)
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+            elif member.isfile():
+                total += member.size
+                if total > limit:
+                    raise InstallError("the archive is too large")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with archive.extractfile(member) as source, open(target, "xb") as output:
+                    shutil.copyfileobj(source, output)
+                os.chmod(target, 0o755 if member.mode & 0o111 else 0o644)
+            elif member.issym() or member.islnk():
+                skipped += 1
+            elif member.type == tarfile.XGLTYPE or member.type == tarfile.XHDTYPE:
+                continue
+            else:
+                raise InstallError(f"unsupported archive entry {name!r}")
+    return root, skipped
+
+
+def go_toolchain(version, directory, platform, opener=None):
+    """GOROOT of `version` under `directory`: downloaded from go.dev, verified
+    against go.dev's published SHA-256, extracted once and reused."""
+    if not re.fullmatch(r"go[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:(?:rc|beta)[0-9]+)?", version):
+        raise InstallError(f"invalid Go version {version!r}")
+    goos, goarch = platform.split("-")
+    directory = Path(directory)
+    goroot = directory / version / "go"
+    marker = directory / version / ".verified"
+    with tempfile.TemporaryDirectory(prefix=".go-", dir=str(directory)) as temporary:
+        temporary = Path(temporary)
+        download("https://go.dev/dl/?mode=json&include=all", temporary / "index.json", 16 << 20, False, opener,
+                 hosts=GO_HOSTS)
+        try:
+            index = json.loads((temporary / "index.json").read_bytes())
+        except ValueError:
+            raise InstallError("the go.dev release index is not JSON") from None
+        wanted = None
+        for release in index if isinstance(index, list) else []:
+            if not isinstance(release, dict) or release.get("version") != version:
+                continue
+            for item in release.get("files", []):
+                if (isinstance(item, dict) and item.get("os") == goos and item.get("arch") == goarch
+                        and item.get("kind") == "archive"):
+                    wanted = item
+        if (wanted is None or not re.fullmatch(r"[0-9a-f]{64}", str(wanted.get("sha256", "")))
+                or wanted.get("filename") != f"{version}.{goos}-{goarch}.tar.gz"):
+            raise InstallError(f"go.dev publishes no {version} archive for {platform}")
+        if marker.is_file() and marker.read_text(encoding="ascii").strip() == wanted["sha256"] and \
+                (goroot / "bin" / "go").is_file():
+            return goroot
+        if (directory / version).exists():
+            shutil.rmtree(directory / version)
+        say(f"Downloading {wanted['filename']} from go.dev...")
+        archive = temporary / "go.tar.gz"
+        download(f"https://dl.google.com/go/{wanted['filename']}", archive, MAX_GO, False, opener,
+                 hosts=GO_HOSTS, seconds=1800)
+        digest = hashlib.sha256()
+        with open(archive, "rb") as stream:
+            for block in iter(lambda: stream.read(1 << 20), b""):
+                digest.update(block)
+        if digest.hexdigest() != wanted["sha256"]:
+            raise InstallError(f"{wanted['filename']} does not match the SHA-256 go.dev publishes")
+        staged = temporary / "root"
+        root, _ = safe_extract(archive, staged)
+        if root != "go" or not (staged / "go" / "bin" / "go").is_file():
+            raise InstallError("unexpected Go archive layout")
+        (directory / version).mkdir()
+        (staged / "go").replace(goroot)
+        marker.write_text(wanted["sha256"] + "\n", encoding="ascii")
+    return goroot
+
+
+def resolve_ref(ref, opener=None, repository=SOURCE_REPOSITORY):
+    """(commit SHA, commit UTC epoch) of `ref` on GitHub."""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}", ref) or ".." in ref:
+        raise InstallError(f"invalid --ref {ref!r}")
+    with tempfile.TemporaryDirectory(prefix="shorebird-ref-") as temporary:
+        path = Path(temporary) / "commit.json"
+        download(f"https://api.github.com/repos/{repository}/commits/{urllib.parse.quote(ref, safe='')}", path,
+                 1 << 20, False, opener, hosts=GITHUB_HOSTS, accept="application/vnd.github+json")
+        try:
+            commit = json.loads(path.read_bytes())
+            sha = commit["sha"]
+            when = commit["commit"]["committer"]["date"]
+        except (ValueError, KeyError, TypeError):
+            raise InstallError(f"GitHub returned no commit for {ref!r}") from None
+    if not re.fullmatch(r"[0-9a-f]{40}", str(sha)):
+        raise InstallError("GitHub returned an invalid commit")
+    epoch = int(datetime_epoch(when))
+    return sha, epoch
+
+
+def datetime_epoch(text):
+    import datetime
+    try:
+        moment = datetime.datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+    except (TypeError, ValueError):
+        raise InstallError("GitHub returned an invalid commit date") from None
+    return moment.timestamp()
+
+
+def fetch_source(sha, destination, opener=None, repository=SOURCE_REPOSITORY):
+    """Extracts the source tree of commit `sha` into `destination` (TLS-authenticated
+    GitHub archive of an immutable commit)."""
+    with tempfile.TemporaryDirectory(prefix="shorebird-src-") as temporary:
+        archive = Path(temporary) / "source.tar.gz"
+        say(f"Downloading the source of {repository}@{sha[:12]}...")
+        download(f"https://codeload.github.com/{repository}/tar.gz/{sha}", archive, MAX_SOURCE, False, opener,
+                 hosts=GITHUB_HOSTS, seconds=900)
+        safe_extract(archive, destination, strip_root=True, limit=MAX_SOURCE * 4)
+    check_source(destination)
+
+
+def check_source(directory):
+    directory = Path(directory)
+    for required in ("go.mod", "cmd/server", "cmd/server-update-tool", "VERSION"):
+        if not (directory / required).exists():
+            raise InstallError(f"{directory} is not a shorebird-server source tree (no {required})")
+
+
+def source_version(source, sha, epoch, ref="", installed=""):
+    """The version a host build gets.
+
+    A release tag (`--ref v1.2.3`) builds exactly that stable version. Anything
+    else is a dev build `vX.Y.Z-dev.<commit UTC time>.g<commit12>` where X.Y.Z is
+    the next patch after the source's VERSION and after the installed stable
+    version (an installed dev version keeps its X.Y.Z), so later commits sort
+    later and the server's self-update accepts them as newer.
+    """
+    import datetime
+    if VERSION.fullmatch(ref or "") and "-" not in ref:
+        return ref
+    base = (Path(source) / "VERSION").read_text(encoding="ascii").strip()
+    match = re.fullmatch(r"v([0-9]+)\.([0-9]+)\.([0-9]+)", base)
+    if not match:
+        raise InstallError("the source VERSION is not vMAJOR.MINOR.PATCH")
+    core = (int(match.group(1)), int(match.group(2)), int(match.group(3)) + 1)
+    installed_match = VERSION.fullmatch(installed or "")
+    if installed_match:
+        major, minor, patch, pre = installed_match.groups()
+        floor = (int(major), int(minor), int(patch) + (0 if pre else 1))
+        core = max(core, floor)
+    when = datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc)
+    return f"v{core[0]}.{core[1]}.{core[2]}-dev.{when:%Y%m%d%H%M%S}.g{sha[:12]}"
+
+
+MODULE = "github.com/shorebird-server"
+
+
+def build_ldflags(version, build_time, trusted):
+    """Same link flags as scripts/build_update_zip.py (a test keeps them equal)."""
+    return ["-s", "-w", f"-X {MODULE}/internal/version.Version={version}",
+            f"-X {MODULE}/internal/version.BuildTime={build_time}",
+            f"-X {MODULE}/internal/updater.TrustedKeys={trusted}"]
+
+
+def build_from_source(source, goroot, work, key, trusted, platform, version, epoch, output, expected_go=""):
+    """Builds, signs (production, host key) and zips one update; returns the ZIP."""
+    import datetime
+    source, goroot, work, output = Path(source), Path(goroot), Path(work), Path(output)
+    goos, goarch = platform.split("-")
+    go = goroot / "bin" / "go"
+    for name in ("gopath", "gocache", "home"):
+        (work / name).mkdir(parents=True, exist_ok=True)
+    shutil.rmtree(work / "out", ignore_errors=True)
+    (work / "out").mkdir()
+    environment = {
+        "PATH": f"{goroot / 'bin'}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "HOME": str(work / "home"), "GOROOT": str(goroot), "GOPATH": str(work / "gopath"),
+        "GOMODCACHE": str(work / "gopath" / "pkg" / "mod"), "GOCACHE": str(work / "gocache"),
+        "GOTOOLCHAIN": "local", "GOFLAGS": "-mod=readonly", "GOENV": "off", "CGO_ENABLED": "0",
+        "LANG": "C.UTF-8",
+    }
+    for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy", "GOPROXY",
+                 "GOSUMDB", "GOPRIVATE", "SSL_CERT_FILE", "SSL_CERT_DIR"):
+        if name in os.environ:
+            environment[name] = os.environ[name]
+    reported = subprocess.run([str(go), "env", "GOVERSION"], env=environment, capture_output=True, text=True)
+    if reported.returncode != 0:
+        raise InstallError(f"the Go toolchain does not run: {reported.stderr.strip()}")
+    if expected_go and reported.stdout.strip() != expected_go:
+        raise InstallError(f"the toolchain reports {reported.stdout.strip()}, go.mod asks for {expected_go}")
+    tool = work / "server-update-tool"
+    say(f"Building shorebird-server {version} for {platform} (Go {reported.stdout.strip()})...")
+    run = lambda arguments, env: subprocess.run(arguments, cwd=str(source), env=env, check=True)  # noqa: E731
+    try:
+        run([str(go), "build", "-trimpath", "-o", str(tool), "./cmd/server-update-tool"], environment)
+        release = work / "out"
+        asset = f"{PRODUCT}-{platform}"
+        binary = release / asset
+        when = datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        public = host_trusted_list(trusted)
+        run([str(go), "build", "-trimpath", "-ldflags=" + " ".join(build_ldflags(version, when, public)), "-o",
+             str(binary), "./cmd/server"], dict(environment, GOOS=goos, GOARCH=goarch))
+        subprocess.run([str(tool), "sign", "-key", str(key), "-binary", str(binary), "-version", version, "-goos", goos,
+                        "-goarch", goarch, "-out-dir", str(release), "-trusted", public, "-production"],
+                       env=environment, check=True, stdout=subprocess.DEVNULL)
+    except subprocess.CalledProcessError as error:
+        raise InstallError(f"the build failed ({' '.join(error.cmd[:3])}...); see the output above") from None
+    (release / "VERSION").write_text(version + "\n", encoding="ascii")
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name in (asset, asset + ".manifest.json", asset + ".sig", "VERSION"):
+            archive.write(release / name, name)
+    return output
+
+
+def host_trusted_list(path):
+    entries = [line.split("#", 1)[0].strip() for line in Path(path).read_text(encoding="ascii").splitlines()]
+    entries = [entry for entry in entries if entry]
+    if not entries:
+        raise InstallError(f"{path} pins no key")
+    return ",".join(entries)
+
+
+# ---------------------------------------------------------------------------
+# Local upgrade through the running server's self-update transaction
+
+
+def _local_request(url, secret_file, data=None, timeout=30):
+    secret = Path(secret_file).read_text(encoding="ascii").strip()
+    headers = {"Authorization": f"Bearer {secret}", "User-Agent": "shorebird-server-installer"}
+    if data is not None:
+        headers["Content-Type"] = "application/zip"
+    request = urllib.request.Request(url, data=data, headers=headers, method="POST" if data is not None else "GET")
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            return response.status, json.loads(response.read(1 << 20) or b"{}")
+    except urllib.error.HTTPError as error:
+        try:
+            body = json.loads(error.read(1 << 16) or b"{}")
+        except ValueError:
+            body = {}
+        return error.code, body
+
+
+def local_update(zip_path, base, bin_dir, version, seconds=600, interval=1.0):
+    """Hands a verified update ZIP to the running server (local upload route, or
+    the maintenance route when the core is in maintenance) and waits until the
+    new version runs: the server's own transaction installs it on trial with
+    watchdog rollback and quarantine. Returns the final status."""
+    local_secret = Path(bin_dir) / "server-local-update.secret"
+    maintenance_secret = Path(bin_dir) / "server-maintenance.secret"
+    data = Path(zip_path).read_bytes()
+    if local_secret.is_file():
+        status, body = _local_request(base + "/api/v1/server/update/local", local_secret, data, timeout=900)
+    elif maintenance_secret.is_file():
+        say("The server is in maintenance; delivering the update through the maintenance route.")
+        status, body = _local_request(base + "/api/v1/server/maintenance/update", maintenance_secret, data,
+                                      timeout=900)
+    else:
+        raise InstallError(f"no {local_secret.name} in {bin_dir}: the running server cannot take a local update "
+                           "(not running, self-update not active, or an older version without the local route). "
+                           "Upload the ZIP as an administrator instead (docs/SELF_UPDATE.md)")
+    if status != 202:
+        raise InstallError(f"the server refused the update: {body.get('code') or status}")
+    say(f"The server accepted {version}; waiting for the restart and its trial...")
+    deadline = time.monotonic() + seconds
+    last = None
+    while time.monotonic() < deadline:
+        time.sleep(interval)
+        try:
+            if not local_secret.is_file():
+                continue
+            status, body = _local_request(base + "/api/v1/server/update/local", local_secret, timeout=5)
+        except (OSError, urllib.error.URLError, ValueError):
+            continue
+        if status != 200:
+            continue
+        last = body
+        if body.get("rolled_back_version") == version:
+            raise InstallError(f"{version} failed its trial and was rolled back (quarantined); "
+                               "see journalctl -u shorebird-server")
+        if body.get("current_version") == version and body.get("journal_state") in ("trial", "healthy"):
+            return body
+        if body.get("state") == "error":
+            raise InstallError(f"the update failed: {body.get('error_code')}")
+    raise InstallError(f"{version} did not start within {seconds} s (last status: "
+                       f"{(last or {}).get('current_version')}, {(last or {}).get('state')})")
 
 
 # ---------------------------------------------------------------------------
@@ -956,6 +1921,68 @@ def main(argv=None):
     settings.add_argument("--use-mirror", choices=("true", "false"), default="false")
     settings.add_argument("--owner", default="")
     settings.add_argument("--display", default="", help="the final path, for the message")
+    env.add_argument("--default-listen", default="")
+    env.add_argument("--db-driver", choices=("", "sqlite", "postgres"), default="")
+    env.add_argument("--db-url", default="")
+    env.add_argument("--reveal", default="", help="file for a generated administrator password (0600)")
+    plan = sub.add_parser("database-plan", help="print: MODE URL SOCKET PORT (refuses database switches)")
+    plan.add_argument("--env", required=True)
+    plan.add_argument("--sqlite", action="store_true")
+    plan.add_argument("--postgres", action="store_true")
+    plan.add_argument("--database-url", default="")
+    plan.add_argument("--pg-socket", default="")
+    plan.add_argument("--pg-port", default="")
+    hba = sub.add_parser("hba", help="prepend the managed peer rule; print the backup path")
+    hba.add_argument("--output", required=True)
+    caddy = sub.add_parser("caddy", help="write the Caddy site; print the backups")
+    caddy.add_argument("--domain", required=True)
+    caddy.add_argument("--upstream", required=True)
+    caddy.add_argument("--acme-email", default="")
+    caddy.add_argument("--caddyfile", required=True)
+    caddy.add_argument("--site-file", required=True)
+    caddy.add_argument("--import-path", default="", help="the site file's path as Caddy sees it")
+    compare = sub.add_parser("compare", help="print -1, 0 or 1 (semantic version order)")
+    compare.add_argument("left")
+    compare.add_argument("right")
+    domain = sub.add_parser("check-domain")
+    domain.add_argument("--domain", required=True)
+    key = sub.add_parser("host-key", help="create the host update key once; print its public key")
+    key.add_argument("--key", required=True)
+    key.add_argument("--trusted", required=True)
+    toolchain = sub.add_parser("go-toolchain", help="print GOROOT of the go.mod toolchain (downloaded, verified)")
+    toolchain.add_argument("--go-mod", required=True)
+    toolchain.add_argument("--dir", required=True)
+    toolchain.add_argument("--platform", required=True, choices=PLATFORMS)
+    gover = sub.add_parser("go-version")
+    gover.add_argument("--go-mod", required=True)
+    ref = sub.add_parser("resolve-ref", help="print: SHA EPOCH")
+    ref.add_argument("--ref", required=True)
+    fetch_src = sub.add_parser("fetch-source")
+    fetch_src.add_argument("--sha", required=True)
+    fetch_src.add_argument("--dir", required=True)
+    srcver = sub.add_parser("source-version")
+    srcver.add_argument("--source", required=True)
+    srcver.add_argument("--sha", required=True)
+    srcver.add_argument("--epoch", type=int, required=True)
+    srcver.add_argument("--ref", default="")
+    srcver.add_argument("--installed", default="")
+    build = sub.add_parser("build", help="build, sign and zip one update from source")
+    build.add_argument("--source", required=True)
+    build.add_argument("--goroot", required=True)
+    build.add_argument("--expected-go", default="")
+    build.add_argument("--work", required=True)
+    build.add_argument("--key", required=True)
+    build.add_argument("--trusted", required=True)
+    build.add_argument("--platform", required=True, choices=PLATFORMS)
+    build.add_argument("--version", required=True)
+    build.add_argument("--epoch", type=int, required=True)
+    build.add_argument("--output", required=True)
+    upgrade = sub.add_parser("local-update", help="install a verified ZIP through the running server")
+    upgrade.add_argument("--zip", required=True)
+    upgrade.add_argument("--url", required=True)
+    upgrade.add_argument("--bin-dir", required=True)
+    upgrade.add_argument("--version", required=True)
+    upgrade.add_argument("--seconds", type=int, default=600)
     health = sub.add_parser("health")
     health.add_argument("--url", required=True)
     health.add_argument("--seconds", type=int, default=120)
@@ -974,12 +2001,50 @@ def main(argv=None):
         elif args.command == "environment":
             values = prepare_environment(args.template, args.output, args.state_dir, base=args.base_url or None,
                                          listen=args.listen or None, admin_email=args.admin_email or None,
-                                         owner=_owner(args.owner))
+                                         owner=_owner(args.owner), default_listen=args.default_listen or None,
+                                         db_driver=args.db_driver or None, db_url=args.db_url or None,
+                                         reveal=args.reveal or None)
             if args.print_port:
                 print(f"PORT={values.get('SERVER_PORT', '8080')}")
         elif args.command == "update-settings":
             prepare_update_settings(args.template, args.output, args.channel, args.use_mirror == "true",
                                     _owner(args.owner), args.display or None)
+        elif args.command == "database-plan":
+            print(" ".join(item or "-" for item in database_plan(
+                args.env, sqlite=args.sqlite, postgres=args.postgres, url=args.database_url,
+                socket_dir=args.pg_socket, port=args.pg_port)))
+        elif args.command == "hba":
+            print(update_hba(args.output))
+        elif args.command == "caddy":
+            for backup in write_caddy(args.domain, args.upstream, args.acme_email, args.caddyfile, args.site_file,
+                                      args.import_path or None):
+                print(backup)
+        elif args.command == "compare":
+            try:
+                left, right = version_key(args.left), version_key(args.right)
+            except ValueError:
+                raise InstallError("invalid version") from None
+            print((left > right) - (left < right))
+        elif args.command == "check-domain":
+            print(check_domain(args.domain))
+        elif args.command == "host-key":
+            print(host_key(args.key, args.trusted))
+        elif args.command == "go-version":
+            print(go_version(args.go_mod))
+        elif args.command == "go-toolchain":
+            print(go_toolchain(go_version(args.go_mod), args.dir, args.platform))
+        elif args.command == "resolve-ref":
+            print(*resolve_ref(args.ref))
+        elif args.command == "fetch-source":
+            fetch_source(args.sha, args.dir)
+        elif args.command == "source-version":
+            print(source_version(args.source, args.sha, args.epoch, args.ref, args.installed))
+        elif args.command == "build":
+            build_from_source(args.source, args.goroot, args.work, args.key, args.trusted, args.platform,
+                              args.version, args.epoch, args.output, args.expected_go)
+        elif args.command == "local-update":
+            status = local_update(args.zip, args.url, args.bin_dir, args.version, args.seconds)
+            print(status.get("current_version", ""), status.get("journal_state", ""))
         else:
             return 0 if wait_healthy(args.url, args.seconds) else 1
     except (InstallError, OSError) as error:
@@ -991,7 +2056,83 @@ def main(argv=None):
 if __name__ == "__main__":
     raise SystemExit(main())
 SHOREBIRD_SERVER_INSTALL_PAYLOAD_1_END
-    cat > "$bundle/server.env.example" <<'SHOREBIRD_SERVER_INSTALL_PAYLOAD_2_END'
+    cat > "$bundle/install_dependencies.sh" <<'SHOREBIRD_SERVER_INSTALL_PAYLOAD_2_END'
+#!/usr/bin/env bash
+# Sourced by install_body.sh: finds what the requested setup needs and installs
+# only what is missing, from the distribution's packages (apt). Modeled on the
+# DaliMaster installer: an existing PostgreSQL (any version, packaged or not,
+# running or stopped) is reused and never upgraded; an installed but broken
+# package is reported for repair instead of being reinstalled.
+
+shorebird_command_works() {
+    command -v "$1" >/dev/null 2>&1 || return 1
+    "$1" --version >/dev/null 2>&1
+}
+
+shorebird_postgres_present() {
+    # SHOREBIRD_DEPENDENCY_ROOT: tests only (an empty prefix is the real system).
+    local socket=$1 port=$2 binary prefix=${SHOREBIRD_DEPENDENCY_ROOT:-}
+    command -v postgres >/dev/null 2>&1 && return 0
+    for binary in "$prefix"/usr/lib/postgresql/*/bin/postgres "$prefix"/usr/local/pgsql/bin/postgres \
+        "$prefix"/usr/pgsql-*/bin/postgres; do
+        [[ -x "$binary" ]] && return 0
+    done
+    if command -v pg_lsclusters >/dev/null 2>&1 && [[ -n $(pg_lsclusters --no-header 2>/dev/null) ]]; then
+        return 0
+    fi
+    [[ -S "$socket/.s.PGSQL.$port" ]]
+}
+
+# shorebird_install_dependencies SKIP_PACKAGES DB_MODE PG_SOCKET PG_PORT CADDY
+#   DB_MODE local needs a PostgreSQL server and psql/createuser/createdb;
+#   CADDY true needs caddy. Prints what it does; returns non-zero on a refusal.
+shorebird_install_dependencies() {
+    local skip_packages=$1 db_mode=$2 pg_socket=$3 pg_port=$4 want_caddy=$5
+    local -a missing=()
+    local command clients=true candidate
+
+    if [[ "$db_mode" == local ]]; then
+        if shorebird_postgres_present "$pg_socket" "$pg_port"; then
+            printf 'Reusing the existing PostgreSQL server; no server package is installed.\n' >&2
+        else
+            missing+=(postgresql)
+        fi
+        for command in psql createuser createdb; do
+            shorebird_command_works "$command" || clients=false
+        done
+        if ! $clients && [[ " ${missing[*]} " != *' postgresql '* ]]; then
+            missing+=(postgresql-client)
+        fi
+    fi
+    if [[ "$want_caddy" == true ]] && ! shorebird_command_works caddy; then
+        missing+=(caddy)
+    fi
+    ((${#missing[@]})) || return 0
+
+    if $skip_packages; then
+        printf 'ERROR: missing %s and --skip-packages forbids installing packages. Install them, or use --database-url URL (external PostgreSQL) or --sqlite.\n' "${missing[*]}" >&2
+        return 1
+    fi
+    if ! command -v apt-get >/dev/null 2>&1 || ! command -v dpkg-query >/dev/null 2>&1; then
+        printf 'ERROR: missing %s and this is not a Debian/Ubuntu system (no apt). Install them with your package manager and rerun, or use --database-url URL / --sqlite.\n' "${missing[*]}" >&2
+        return 1
+    fi
+    for candidate in "${missing[@]}"; do
+        if dpkg-query -W -f='${Status}' "$candidate" 2>/dev/null | grep -q ' ok installed$'; then
+            printf 'ERROR: %s is installed but its commands do not work; repair it and rerun.\n' "$candidate" >&2
+            return 1
+        fi
+    done
+    printf 'Installing missing packages: %s\n' "${missing[*]}" >&2
+    apt-get update || return
+    if [[ " ${missing[*]} " == *' caddy '* ]] && ! apt-cache show caddy >/dev/null 2>&1; then
+        printf 'ERROR: this distribution has no caddy package. Install Caddy from https://caddyserver.com/docs/install#debian-ubuntu-raspbian and rerun, or drop --install-caddy and configure your own reverse proxy.\n' >&2
+        return 1
+    fi
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade "${missing[@]}"
+}
+SHOREBIRD_SERVER_INSTALL_PAYLOAD_2_END
+    cat > "$bundle/server.env.example" <<'SHOREBIRD_SERVER_INSTALL_PAYLOAD_3_END'
 # shorebird-server configuration for the native Linux install
 # (deploy/linux/install.sh, docs/SELF_UPDATE.md). Environment only.
 # The installer creates the secrets below when missing and never replaces an
@@ -1001,14 +2142,17 @@ SHOREBIRD_SERVER_INSTALL_PAYLOAD_1_END
 # --- Server ---
 SERVER_HOST=0.0.0.0
 SERVER_PORT=8080
-# Public URL devices and the CLI use (put TLS in front for production).
+# Public URL devices and the CLI use (https behind a reverse proxy; install.sh --domain sets up Caddy).
 SERVER_BASE_URL=http://localhost:8080
 
-# --- Database: sqlite (default) or postgres ---
-DB_DRIVER=sqlite
+# --- Database (set by the installer; never switched on a rerun) ---
+# postgres: the local PostgreSQL over its Unix socket with peer authentication
+# (no password), or an external DATABASE_URL (--database-url). The server
+# applies its schema migrations at startup (DB_AUTO_MIGRATE=off disables).
+# sqlite: only with --sqlite (small or test installs), file DB_PATH.
+DB_DRIVER=postgres
+DATABASE_URL=
 DB_PATH=@STATE_DIR@/data/shorebird.db
-# DB_DRIVER=postgres
-# DATABASE_URL=postgres://shorebird:PASSWORD@localhost:5432/shorebird?sslmode=disable
 
 # --- Storage: local (default) or s3 ---
 STORAGE_DRIVER=local
@@ -1038,11 +2182,11 @@ DEFAULT_ADMIN_NAME=Administrator
 # SERVER_SELF_UPDATE=auto
 # SERVER_UPDATE_MIRROR_URL=default
 # SERVER_UPDATE_GITHUB_TOKEN=
-SHOREBIRD_SERVER_INSTALL_PAYLOAD_2_END
-    cat > "$bundle/server-update.json" <<'SHOREBIRD_SERVER_INSTALL_PAYLOAD_3_END'
-{"channel": "stable", "use_mirror": false, "auto_update": false, "check_interval_seconds": 86400}
 SHOREBIRD_SERVER_INSTALL_PAYLOAD_3_END
-    cat > "$bundle/shorebird-server.service" <<'SHOREBIRD_SERVER_INSTALL_PAYLOAD_4_END'
+    cat > "$bundle/server-update.json" <<'SHOREBIRD_SERVER_INSTALL_PAYLOAD_4_END'
+{"channel": "stable", "use_mirror": false, "auto_update": false, "check_interval_seconds": 86400}
+SHOREBIRD_SERVER_INSTALL_PAYLOAD_4_END
+    cat > "$bundle/shorebird-server.service" <<'SHOREBIRD_SERVER_INSTALL_PAYLOAD_5_END'
 # Example systemd unit for a self-updating shorebird-server
 # (docs/SELF_UPDATE.md, "Installation layout").
 #
@@ -1078,11 +2222,11 @@ ReadWritePaths=/var/lib/shorebird-server
 
 [Install]
 WantedBy=multi-user.target
-SHOREBIRD_SERVER_INSTALL_PAYLOAD_4_END
-    cat > "$bundle/server-update.trusted-keys" <<'SHOREBIRD_SERVER_INSTALL_PAYLOAD_5_END'
+SHOREBIRD_SERVER_INSTALL_PAYLOAD_5_END
+    cat > "$bundle/server-update.trusted-keys" <<'SHOREBIRD_SERVER_INSTALL_PAYLOAD_6_END'
 # Production shorebird-server self-update public keys (base64 Ed25519), one per line.
 # Generated by shorebird-workspace scripts/provision_release_keys.py; the installer pins these.
-SHOREBIRD_SERVER_INSTALL_PAYLOAD_5_END
+SHOREBIRD_SERVER_INSTALL_PAYLOAD_6_END
     bash "$bundle/install_body.sh" "$@"
 )
 shorebird_server_install "$@"
