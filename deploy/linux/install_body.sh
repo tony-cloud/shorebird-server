@@ -204,9 +204,10 @@ service_user=shorebird
 as_service() {
     if $staging; then "$@"; else runuser -u "$service_user" -- "$@"; fi
 }
-# as_postgres CMD...: run as the PostgreSQL superuser account (the caller, when staging).
+# as_postgres CMD...: run as the PostgreSQL superuser account (the caller, when
+# staging), from / so the client never tries to read the caller's directory.
 as_postgres() {
-    if $staging; then "$@"; else runuser -u postgres -- "$@"; fi
+    if $staging; then "$@"; else (cd / && runuser -u postgres -- "$@"); fi
 }
 
 # The database is decided before anything changes: a rerun never switches it.
