@@ -37,6 +37,9 @@ type DBConfig struct {
 	URL string
 	// Path is the SQLite database file path (used when driver=sqlite).
 	Path string
+	// AutoMigrate applies missing PostgreSQL migrations at startup
+	// (DB_AUTO_MIGRATE, default true; SQLite always migrates itself).
+	AutoMigrate bool
 }
 
 // StorageConfig holds object storage configuration.
@@ -135,9 +138,10 @@ func Load() *Config {
 			WriteTimeout: 30 * time.Second,
 		},
 		DB: DBConfig{
-			Driver: envOrDefault("DB_DRIVER", "sqlite"),
-			URL:    envOrDefault("DATABASE_URL", "postgres://shorebird:shorebird@localhost:5432/shorebird?sslmode=disable"),
-			Path:   envOrDefault("DB_PATH", "data/shorebird.db"),
+			Driver:      envOrDefault("DB_DRIVER", "sqlite"),
+			URL:         envOrDefault("DATABASE_URL", "postgres://shorebird:shorebird@localhost:5432/shorebird?sslmode=disable"),
+			Path:        envOrDefault("DB_PATH", "data/shorebird.db"),
+			AutoMigrate: envBoolOrDefault("DB_AUTO_MIGRATE", true),
 		},
 		Storage: StorageConfig{
 			Driver:          envOrDefault("STORAGE_DRIVER", "local"),

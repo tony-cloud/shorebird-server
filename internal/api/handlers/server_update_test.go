@@ -55,7 +55,7 @@ type updateFixture struct {
 	audit     string
 }
 
-func newUpdateFixture(t *testing.T, active bool) *updateFixture {
+func newUpdateFixture(t *testing.T, active bool, localSecret ...string) *updateFixture {
 	t.Helper()
 	f := newAPIFixture(t)
 	if err := f.db.SetUserAdmin(t.Context(), f.ownerID, true); err != nil {
@@ -82,7 +82,7 @@ func newUpdateFixture(t *testing.T, active bool) *updateFixture {
 	t.Cleanup(service.Close)
 	auditPath := filepath.Join(dir, "audit.jsonl")
 	router := NewRouterWithOptions(f.auth, f.db, f.objects, nil, "", PatchDeliveryConfig{}, RouterOptions{
-		ServerUpdate: &ServerUpdateHandler{DB: f.db, Service: service, Auditor: updater.NewFileAuditor(auditPath)},
+		ServerUpdate: &ServerUpdateHandler{DB: f.db, Service: service, Auditor: updater.NewFileAuditor(auditPath), LocalSecret: strings.Join(localSecret, "")},
 	})
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
@@ -249,4 +249,64 @@ func TestServerRollbackReauthentication(t *testing.T) {
 func handlerReset(t *testing.T) {
 	reauthNow = func() time.Time { return time.Now().Add(reauthWindow) }
 	t.Cleanup(func() { reauthNow = time.Now })
+}
+
+func TestServerUpdateLocalRoute(t *testing.T) {
+	const secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	f := newUpdateFixture(t, true, secret)
+	call := func(method, bearer string, header http.Header, body string) (int, []byte) {
+		t.Helper()
+		req, err := http.NewRequest(method, f.server.URL+"/api/v1/server/update/local", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name, values := range header {
+			req.Header[name] = values
+		}
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		if method == http.MethodPost {
+			req.Header.Set("Content-Type", "application/zip")
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		data, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, data
+	}
+	for _, bearer := range []string{"", "wrong", f.owner} {
+		if status, body := call(http.MethodGet, bearer, nil, ""); status != http.StatusUnauthorized || decodeCode(t, body) != "local_secret_invalid" {
+			t.Errorf("bearer %q: %d %s", bearer, status, body)
+		}
+	}
+	for _, name := range []string{"X-Forwarded-For", "Forwarded", "X-Real-Ip"} {
+		if status, body := call(http.MethodPost, secret, http.Header{name: {"203.0.113.9"}}, "PK"); status != http.StatusForbidden || decodeCode(t, body) != "local_only" {
+			t.Errorf("proxied (%s): %d %s", name, status, body)
+		}
+	}
+	if status, body := call(http.MethodGet, secret, nil, ""); status != http.StatusOK || !strings.Contains(string(body), `"current_version":"v1.1.0"`) {
+		t.Fatalf("status: %d %s", status, body)
+	}
+	// The ZIP reaches the updater's full verification.
+	if status, body := call(http.MethodPost, secret, nil, "not a zip"); status != http.StatusUnprocessableEntity || decodeCode(t, body) != "invalid_zip" {
+		t.Fatalf("upload: %d %s", status, body)
+	}
+	audit, _ := os.ReadFile(f.audit)
+	if !strings.Contains(string(audit), `"server.update.local_upload"`) || strings.Contains(string(audit), secret) {
+		t.Fatalf("audit: %s", audit)
+	}
+
+	// Without a secret the route does not exist.
+	plain := newUpdateFixture(t, true)
+	resp, err := http.Get(plain.server.URL + "/api/v1/server/update/local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusUnauthorized {
+		t.Fatalf("local route mounted without a secret: %d", resp.StatusCode)
+	}
 }

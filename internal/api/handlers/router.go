@@ -73,6 +73,9 @@ func NewRouterWithOptions(authService *authpkg.Service, database db.Store, store
 	// Auth middleware
 	authMw := middleware.AuthMiddleware(authService, database)
 
+	if opts.ServerUpdate != nil && opts.ServerUpdate.LocalSecret != "" {
+		opts.ServerUpdate.LocalRoutes(r)
+	}
 	r.Get("/openapi.yaml", serveOpenAPISpec)
 	r.Get("/api/v1/openapi.yaml", serveOpenAPISpec)
 	// Short-lived transfer grants are issued only by the authenticated API.

@@ -164,9 +164,9 @@ pass a returned `next_before_id` as `before_id` to request the next page.
 Organization membership alone does not grant access to this administrative route.
 
 SQLite adds the nullable metadata columns and deduplication index on startup,
-preserving existing rows. PostgreSQL deployments must apply
-`internal/db/migrations/004_patch_event_metadata.sql` after migration 003 and
-before running this server version, using the existing Goose migration workflow.
+preserving existing rows. PostgreSQL applies
+`internal/db/migrations/004_patch_event_metadata.sql` at startup with the other
+pending migrations (see "PostgreSQL schema" below).
 
 ### Managed patch signing
 
@@ -210,9 +210,28 @@ The updated native updater can require this with
 `patch_response_verification: required`. Customer-signed and legacy releases do
 not have a server-held key for authenticating these responses.
 
-SQLite adds the signing tables and columns on startup. PostgreSQL deployments
-must apply `internal/db/migrations/003_managed_signing.sql` with the existing
-Goose migration workflow before using this server version.
+SQLite adds the signing tables and columns on startup. PostgreSQL applies
+`internal/db/migrations/003_managed_signing.sql` at startup (see "PostgreSQL
+schema" below).
+
+### PostgreSQL schema
+
+With `DB_DRIVER=postgres` the server applies every pending migration of
+`internal/db/migrations` (their goose `Up` sections, each in a transaction,
+serialized by an advisory lock) at startup and records them in goose's own
+`goose_db_version` table, so a database migrated with the goose CLI continues
+where goose stopped. A database that already has the schema but no
+`goose_db_version` (migrations applied by hand) is refused rather than
+guessed; record what it has once, for example when 001 to 005 are applied:
+
+```sql
+CREATE TABLE goose_db_version (id SERIAL PRIMARY KEY, version_id BIGINT NOT NULL,
+  is_applied BOOLEAN NOT NULL, tstamp TIMESTAMP DEFAULT now());
+INSERT INTO goose_db_version (version_id, is_applied) VALUES (0,true),(1,true),(2,true),(3,true),(4,true),(5,true);
+```
+
+`DB_AUTO_MIGRATE=off` disables migrations for operators who run goose themselves. A failure keeps a supervised server in maintenance
+(`DATABASE_INIT_FAILED`) with the migration error.
 
 ### Required encrypted patch delivery
 

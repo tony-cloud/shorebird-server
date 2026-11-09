@@ -119,6 +119,28 @@ Status fields: `mode`, `managed_by`, `unavailable_reason`, `platform`,
 the new `current_version` with `journal_state` `trial`, then `healthy`; failure
 is `state: error`, `error_code: update_rolled_back`, `last_rollback: watchdog`.
 
+## Local upload (host administrator)
+
+`deploy/linux/install.sh --build-from-source` upgrades a host build through
+this route instead of an administrator token. In `active` mode every core
+start writes a fresh 256-bit secret to
+`<state dir>/server-local-update.secret` (0600, service account; removed at
+shutdown) and mounts, outside the user authentication:
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/v1/server/update/local` | the status above |
+| `POST /api/v1/server/update/local` | raw signed ZIP, same verification and rules as the admin upload, except the channel (a dev build installs on the stable channel: the host administrator chose it) |
+
+The caller must send `Authorization: Bearer <secret>`, connect over loopback
+and send no `Forwarded`, `X-Forwarded-For` or `X-Real-IP` header, so the route
+is unreachable through a reverse proxy even with the secret
+(`401 local_secret_invalid`, `403 local_only`). Reading the secret requires
+the service account or root, which can already replace the binary; the route
+adds the transaction (trial, watchdog rollback, quarantine) to what they can
+do, not a privilege. Uploads are audited with `auth: local_secret`. When the
+core is in maintenance the installer uses the maintenance route instead.
+
 ## Release discovery
 
 - `stable` reads `GET /repos/<repo>/releases/latest` (never a prerelease);
@@ -385,17 +407,26 @@ uploads, which run without a database, are audited in the same place.
 
 ## Operator checklist
 
-1. In shorebird-workspace, run
-   `scripts/provision_release_keys.sh init --production --private-dir DIR --write-repo-pins --apply-github`
+The step-by-step guide is deploy/linux/README.md ("Set up your server").
+
+1. Release from the operator's machine (no CI token): in shorebird-workspace,
+   `scripts/provision_release_keys.sh server-release --private-dir DIR` creates
+   the update key when missing, pins it in `signing/server-update.trusted-keys`
+   and `deploy/linux/install.sh` (commit them, or `--commit-pins`, and push),
+   builds all five platforms from a clean worktree of the committed `HEAD` and
+   verifies them; `--publish [--version vX.Y.Z]` creates the release with the
+   operator's `gh` login, attaching `install.sh` and `install.sh.sha256`.
+   `--apply-github` also sets the CI variable and secret below.
+2. Or through CI: `scripts/provision_release_keys.sh init --production --private-dir DIR --write-repo-pins --apply-github`
    (add `--server-release-token-file FILE` for `SHOREBIRD_SERVER_RELEASE_TOKEN`,
-   a token with contents: write on `tony-cloud/shorebird-server`). It creates
-   the update key, sets the variable `SHOREBIRD_SERVER_UPDATE_PUBLIC_KEYS`
-   before the secret `SHOREBIRD_SERVER_UPDATE_SIGNING_KEY`, and pins the key
-   in `signing/server-update.trusted-keys` and `deploy/linux/install.sh`.
-   Commit those two files here; `verify` checks that everything agrees.
-2. Dispatch the workflow with `publish_server_release: true` (and a
+   a token with contents: write on `tony-cloud/shorebird-server`) sets the
+   variable `SHOREBIRD_SERVER_UPDATE_PUBLIC_KEYS` before the secret
+   `SHOREBIRD_SERVER_UPDATE_SIGNING_KEY` and writes the same pins; then
+   dispatch the workflow with `publish_server_release: true` (and a
    `server_release_version` for a stable release).
-3. On the host: `curl -fsSL .../deploy/linux/install.sh | sudo bash -s -- --base-url https://HOST`
-   (deploy/linux/README.md); check `GET /api/v1/admin/server/update` shows
-   `mode: active`.
-4. Keep Docker deployments on image updates.
+3. On the host: `curl -fsSLO https://github.com/tony-cloud/shorebird-server/releases/latest/download/install.sh`
+   (verify `install.sh.sha256`), then `sudo bash install.sh --domain HOST`;
+   check `GET /api/v1/admin/server/update` shows `mode: active`.
+4. Without a published release, `sudo bash install.sh --build-from-source --ref REF`
+   builds on the host with a host-only key (upgrades: rerun with a newer ref).
+5. Keep Docker deployments on image updates.

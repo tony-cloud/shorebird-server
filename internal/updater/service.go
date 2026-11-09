@@ -401,7 +401,15 @@ func (s *Service) run(ctx context.Context, automatic bool, release *Release, sou
 // background (202). A stable-channel ZIP is accepted on either channel; a
 // dev-channel ZIP requires the dev channel. The version must be newer than
 // the running one and not quarantined.
-func (s *Service) Upload(reader io.Reader) (string, error) {
+func (s *Service) Upload(reader io.Reader) (string, error) { return s.upload(reader, true) }
+
+// UploadLocal is Upload for the host's own administrator (the root-only
+// local route, see docs/SELF_UPDATE.md "Local upload"): every rule applies
+// except the channel, because the operator chose this exact build on the
+// host. A dev build still needs to be newer and not quarantined.
+func (s *Service) UploadLocal(reader io.Reader) (string, error) { return s.upload(reader, false) }
+
+func (s *Service) upload(reader io.Reader, enforceChannel bool) (string, error) {
 	s.mu.Lock()
 	if err := s.preflightLocked(); err != nil {
 		s.mu.Unlock()
@@ -433,7 +441,7 @@ func (s *Service) Upload(reader io.Reader) (string, error) {
 	if s.ctx.Err() != nil {
 		return fail(errors.New("update_cancelled"))
 	}
-	if release.Channel == "dev" && s.status.Channel != "dev" {
+	if enforceChannel && release.Channel == "dev" && s.status.Channel != "dev" {
 		return fail(errors.New("dev_channel_required"))
 	}
 	if !semver.IsValid(s.status.CurrentVersion) || semver.Compare(version, s.status.CurrentVersion) <= 0 {

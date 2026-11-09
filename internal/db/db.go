@@ -36,6 +36,9 @@ func NewPostgresStore(ctx context.Context, databaseURL string) (*PgStore, error)
 	return &PgStore{pool: pool}, nil
 }
 
+// DriverName reports the backend for /health.
+func (db *PgStore) DriverName() string { return "postgres" }
+
 // Close closes the database connection pool.
 func (db *PgStore) Close() {
 	db.pool.Close()

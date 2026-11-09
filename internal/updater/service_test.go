@@ -229,6 +229,19 @@ func TestUploadRules(t *testing.T) {
 		}
 		waitState(t, s, "restarting")
 	})
+	t.Run("local upload skips only the channel rule", func(t *testing.T) {
+		s, _ := newTestService(t, "v1.0.0", &fakeSource{}, &fakeInstaller{}, k.trust)
+		if _, err := s.UploadLocal(bytes.NewReader(zipFor("v1.0.0-dev.1", "dev"))); err == nil || err.Error() != "version_not_newer" {
+			t.Fatalf("older dev build: %v", err)
+		}
+		if v, err := s.UploadLocal(bytes.NewReader(zipFor("v1.0.1-dev.1", "dev"))); err != nil || v != "v1.0.1-dev.1" {
+			t.Fatalf("local dev upload on the stable channel: %v", err)
+		}
+		waitState(t, s, "restarting")
+		if st := s.Status(); st.Channel != "stable" {
+			t.Fatalf("a local upload must not change the settings: %+v", st)
+		}
+	})
 	t.Run("stable ZIP on the stable channel", func(t *testing.T) {
 		installer := &fakeInstaller{}
 		s, restarts := newTestService(t, "v1.0.0", &fakeSource{}, installer, k.trust)

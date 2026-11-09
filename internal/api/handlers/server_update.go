@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"encoding/json"
 	"io"
 	"net"
@@ -25,7 +26,10 @@ type ServerUpdateHandler struct {
 	DB      db.Store
 	Service *updater.Service
 	Auditor updater.Auditor
-	reauth  reauthLimiter
+	// LocalSecret enables the local upload route (LocalRoutes) for the host's
+	// root administrator; empty: not mounted. See docs/SELF_UPDATE.md.
+	LocalSecret string
+	reauth      reauthLimiter
 }
 
 const maxServerUpdateJSON = 16 << 10
@@ -313,4 +317,59 @@ func (l *reauthLimiter) succeed(userID int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	delete(l.failures, userID)
+}
+
+// LocalRoutes registers the local upload outside the user authentication:
+// GET and POST /api/v1/server/update/local. The caller proves it can read the
+// secret file the server wrote into its state directory (service account and
+// root only) and must connect over loopback without proxy headers, so the
+// route is unreachable through a reverse proxy even with the secret. The
+// rules are the admin upload's, except the channel (Service.UploadLocal):
+// the host's administrator chose this build. deploy/linux/install.sh
+// --build-from-source upgrades through it.
+func (h *ServerUpdateHandler) LocalRoutes(r chi.Router) {
+	r.Get("/api/v1/server/update/local", h.local(func(w http.ResponseWriter, r *http.Request) {
+		respondJSON(w, http.StatusOK, h.Service.Status())
+	}))
+	r.Post("/api/v1/server/update/local", h.local(h.localUpload))
+}
+
+func (h *ServerUpdateHandler) local(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		ip := net.ParseIP(host)
+		if err != nil || ip == nil || !ip.IsLoopback() || r.Header.Get("Forwarded") != "" ||
+			r.Header.Get("X-Forwarded-For") != "" || r.Header.Get("X-Real-Ip") != "" {
+			respondCodedError(w, http.StatusForbidden, "local_only", "This route is only available on the host itself")
+			return
+		}
+		got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		if h.LocalSecret == "" || subtle.ConstantTimeCompare([]byte(got), []byte(h.LocalSecret)) != 1 {
+			h.record(r, nil, "server.update.local", "local_secret_invalid", "local_secret", nil)
+			respondCodedError(w, http.StatusUnauthorized, "local_secret_invalid", "Unauthorized")
+			return
+		}
+		next(w, r)
+	}
+}
+
+func (h *ServerUpdateHandler) localUpload(w http.ResponseWriter, r *http.Request) {
+	contentType := strings.ToLower(strings.TrimSpace(strings.Split(r.Header.Get("Content-Type"), ";")[0]))
+	if contentType != "application/zip" && contentType != "application/octet-stream" {
+		respondCodedError(w, http.StatusUnsupportedMediaType, "zip_required", "Send the signed update ZIP as application/zip")
+		return
+	}
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(15 * time.Minute))
+	body := http.MaxBytesReader(w, r.Body, updater.MaxZIPBytes)
+	from := h.Service.Status().CurrentVersion
+	version, err := h.Service.UploadLocal(body)
+	if err != nil {
+		_, _ = io.Copy(io.Discard, body)
+		h.record(r, nil, "server.update.local_upload", err.Error(), "local_secret", map[string]any{"from_version": from})
+		respondUpdateError(w, err)
+		return
+	}
+	h.record(r, nil, "server.update.local_upload", "accepted", "local_secret", map[string]any{"version": version, "from_version": from})
+	respondJSON(w, http.StatusAccepted, h.Service.Status())
 }

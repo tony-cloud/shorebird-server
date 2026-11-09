@@ -80,7 +80,22 @@ func runCore(ctx context.Context, env *coreEnv) (exitCode int, fail *startupFail
 		return 0, transientFailure("DATABASE_UNAVAILABLE", "database", "Start the database or fix DB_DRIVER/DATABASE_URL/DB_PATH", err)
 	}
 	defer database.Close()
-	log.Printf("Database: %s (%s)", cfg.DB.Driver, cfg.DB.Path)
+	if migrator, ok := database.(interface {
+		Migrate(context.Context) (db.MigrationResult, error)
+	}); ok {
+		if !cfg.DB.AutoMigrate {
+			log.Print("Database: automatic PostgreSQL migrations are off (DB_AUTO_MIGRATE); apply internal/db/migrations yourself")
+		} else if result, err := migrator.Migrate(ctx); err != nil {
+			return 0, transientFailure("DATABASE_INIT_FAILED", "database", "Fix the PostgreSQL schema migration (see the error), or set DB_AUTO_MIGRATE=off and apply internal/db/migrations with goose", err)
+		} else if len(result.Applied) > 0 {
+			log.Printf("Database: applied PostgreSQL migrations %v (schema version %d)", result.Applied, result.Current)
+		}
+	}
+	if cfg.DB.Driver == "sqlite" || cfg.DB.Driver == "" {
+		log.Printf("Database: sqlite (%s)", cfg.DB.Path)
+	} else {
+		log.Printf("Database: %s", cfg.DB.Driver)
+	}
 
 	adminHash, err := auth.HashPassword(cfg.Admin.Password)
 	if err != nil {
@@ -122,6 +137,18 @@ func runCore(ctx context.Context, env *coreEnv) (exitCode int, fail *startupFail
 	}
 	log.Printf("Storage: %s", store.BackendName())
 
+	// --- Local upload (root-only, docs/SELF_UPDATE.md "Local upload") ---
+	var localSecret string
+	if env.service.Active() {
+		secret, remove, err := createLocalSecret(env.su.localSecretPath())
+		if err != nil {
+			log.Printf("Self-update: local upload unavailable (%v)", err)
+		} else {
+			localSecret = secret
+			defer remove()
+		}
+	}
+
 	// --- Router ---
 	router := handlers.NewRouterWithOptions(authService, database, store, mailer, cfg.Server.BaseURL, handlers.PatchDeliveryConfig{
 		EncryptionMode:        cfg.PatchDelivery.EncryptionMode,
@@ -129,7 +156,7 @@ func runCore(ctx context.Context, env *coreEnv) (exitCode int, fail *startupFail
 		CacheEncryptedPatches: cfg.PatchDelivery.CacheEncryptedPatches,
 	}, handlers.RouterOptions{
 		Signing:      handlers.SigningConfig{MasterKey: signingMasterKey},
-		ServerUpdate: &handlers.ServerUpdateHandler{DB: database, Service: env.service, Auditor: env.auditor},
+		ServerUpdate: &handlers.ServerUpdateHandler{DB: database, Service: env.service, Auditor: env.auditor, LocalSecret: localSecret},
 	})
 
 	handler, err := artifactgateway.Wrap(router, os.Getenv("SHOREBIRD_ARTIFACTS_DIR"), os.Getenv("ARTIFACT_PROXY_UPSTREAM"))

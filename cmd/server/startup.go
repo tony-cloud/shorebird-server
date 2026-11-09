@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"os"
@@ -53,6 +55,35 @@ func (su selfUpdate) installer() updater.FileInstaller {
 
 func (su selfUpdate) secretPath() string {
 	return filepath.Join(su.stateDir, "server-maintenance.secret")
+}
+
+func (su selfUpdate) localSecretPath() string {
+	return filepath.Join(su.stateDir, "server-local-update.secret")
+}
+
+// createLocalSecret writes a fresh 256-bit secret for the local upload route
+// (0600, service account) and returns it with its removal. The file is
+// replaced at every core start, so a copy taken earlier stops working.
+func createLocalSecret(path string) (string, func(), error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", nil, err
+	}
+	secret := hex.EncodeToString(raw)
+	_ = os.Remove(path)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", nil, err
+	}
+	_, err = f.WriteString(secret + "\n")
+	if e := f.Close(); err == nil {
+		err = e
+	}
+	if err != nil {
+		_ = os.Remove(path)
+		return "", nil, err
+	}
+	return secret, func() { _ = os.Remove(path) }, nil
 }
 
 func watchdogOptions(cfg *config.Config) updater.WatchdogOptions {
