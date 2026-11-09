@@ -38,7 +38,10 @@ and `VERSION` live next to it. Recommended Linux layout (see
 /etc/shorebird-server/server.env                 configuration (root:shorebird 0640)
 ```
 
-The server resolves symlinks before anything else, so it always replaces the
+`deploy/linux/install.sh` (deploy/linux/README.md) creates exactly this layout
+in one command, verifies the signed release first, and creates missing
+runtime secrets without touching existing ones. The server resolves symlinks
+before anything else, so it always replaces the
 managed image, never the symlink. A root-owned image or a read-only directory
 logs `UPDATE_INSTALL_UNAVAILABLE` at start, reports `install_writable: false`
 and every install fails with `install_permission_denied`. Install by hand only
@@ -286,11 +289,19 @@ IDs `sha256:<hex of the raw public key>`, and a domain-separated message
   `development_trust: true`. `--production` and `server-update-tool sign
   -production` refuse it. Never deploy a development build.
 
-Create the production key once, offline:
+Create the production key once, offline, with the workspace provisioning
+script (docs/RELEASE_KEYS.md in shorebird-workspace), which also pins it into
+the installer and sets the CI secret and variable:
 
 ```sh
-go run ./cmd/server-update-tool keygen -out server-update-signing.pem   # prints "<base64 public key> <key id>"
+scripts/provision_release_keys.sh init --production --private-dir DIR --write-repo-pins --apply-github
+scripts/provision_release_keys.sh rotate server-update --stage add|activate|retire ...   # rotation, in that order
 ```
+
+The manual equivalent is
+`go run ./cmd/server-update-tool keygen -out server-update-signing.pem` (prints
+`<base64 public key> <key id>`). The installer pins the production keys listed
+in `signing/server-update.trusted-keys`.
 
 ## Signed artifacts and releases
 
@@ -374,14 +385,17 @@ uploads, which run without a database, are audited in the same place.
 
 ## Operator checklist
 
-1. Generate the production key offline (`server-update-tool keygen`); store
-   the PEM as secret `SHOREBIRD_SERVER_UPDATE_SIGNING_KEY` and the public key
-   (comma-separated list when rotating) as variable
-   `SHOREBIRD_SERVER_UPDATE_PUBLIC_KEYS` in the workspace repository.
-2. Create `SHOREBIRD_SERVER_RELEASE_TOKEN` (contents: write on
-   `tony-cloud/shorebird-server`) to allow publishing.
-3. Dispatch the workflow with `publish_server_release: true` (and a
+1. In shorebird-workspace, run
+   `scripts/provision_release_keys.sh init --production --private-dir DIR --write-repo-pins --apply-github`
+   (add `--server-release-token-file FILE` for `SHOREBIRD_SERVER_RELEASE_TOKEN`,
+   a token with contents: write on `tony-cloud/shorebird-server`). It creates
+   the update key, sets the variable `SHOREBIRD_SERVER_UPDATE_PUBLIC_KEYS`
+   before the secret `SHOREBIRD_SERVER_UPDATE_SIGNING_KEY`, and pins the key
+   in `signing/server-update.trusted-keys` and `deploy/linux/install.sh`.
+   Commit those two files here; `verify` checks that everything agrees.
+2. Dispatch the workflow with `publish_server_release: true` (and a
    `server_release_version` for a stable release).
-4. Install the archive binary into the managed path (layout above) with the
-   systemd unit; check `GET /api/v1/admin/server/update` shows `mode: active`.
-5. Keep Docker deployments on image updates.
+3. On the host: `curl -fsSL .../deploy/linux/install.sh | sudo bash -s -- --base-url https://HOST`
+   (deploy/linux/README.md); check `GET /api/v1/admin/server/update` shows
+   `mode: active`.
+4. Keep Docker deployments on image updates.

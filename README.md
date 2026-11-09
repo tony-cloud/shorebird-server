@@ -29,6 +29,16 @@ and file storage are auto-created under the `data/` directory.
 
 Navigate to **http://localhost:8080** -> Register -> Start managing apps.
 
+### Native Linux install (systemd, self-updating)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tony-cloud/shorebird-server/main/deploy/linux/install.sh | sudo bash -s -- --base-url https://patch.example.com
+```
+
+Downloads and verifies the newest signed release, installs it with its systemd
+unit and creates missing secrets. See `deploy/linux/README.md` and
+`docs/SELF_UPDATE.md`.
+
 ### 3. (Optional) Use PostgreSQL + MinIO
 
 For production deployments that need horizontal scaling:

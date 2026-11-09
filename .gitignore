@@ -34,3 +34,6 @@ coverage/
 signing/*.pem
 !signing/server-update.DEVELOPMENT-ONLY.pem
 *.key
+
+# Python bytecode (deploy/linux tests)
+__pycache__/
