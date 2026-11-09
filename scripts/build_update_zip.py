@@ -126,8 +126,11 @@ def main() -> None:
     (release / 'VERSION').write_text(version + '\n')
     with tempfile.TemporaryDirectory(dir=out) as temporary:
         tool = Path(temporary) / 'server-update-tool'
+        # The signing tool runs here, so build it for the host even when the
+        # caller cross-compiles (CI legs export GOOS/GOARCH for the target).
+        host_environment = {k: v for k, v in environment.items() if k not in ('GOOS', 'GOARCH', 'GOARM', 'GOAMD64', 'GOARM64')}
         subprocess.run(['go', 'build', '-mod=readonly', '-trimpath', '-o', str(tool), './cmd/server-update-tool'],
-                       cwd=source, env=environment, check=True)
+                       cwd=source, env=host_environment, check=True)
         for label in args.target or [host_target()]:
             if label not in TARGETS:
                 raise SystemExit(f'Unsupported target {label}')
