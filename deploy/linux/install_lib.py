@@ -1148,7 +1148,15 @@ def local_update(zip_path, base, bin_dir, version, seconds=600, interval=1.0):
                            "(not running, self-update not active, or an older version without the local route). "
                            "Upload the ZIP as an administrator instead (docs/SELF_UPDATE.md)")
     if status != 202:
-        raise InstallError(f"the server refused the update: {body.get('code') or status}")
+        code = body.get("code") or str(status)
+        hints = {
+            "update_trial_in_progress": "the previous update is still on trial (SERVER_UPDATE_TRIAL_SECONDS, "
+                                        "default 300 s); rerun once it is healthy",
+            "version_not_newer": "the running server is already at this version or newer",
+            "version_quarantined": "this version failed its trial before and is quarantined; build a newer commit",
+            "untrusted_signer": "the running binary does not trust this host's update key",
+        }
+        raise InstallError(f"the server refused the update: {code}" + (f" ({hints[code]})" if code in hints else ""))
     say(f"The server accepted {version}; waiting for the restart and its trial...")
     deadline = time.monotonic() + seconds
     last = None

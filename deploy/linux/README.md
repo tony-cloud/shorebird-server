@@ -49,7 +49,7 @@ scripts/provision_release_keys.sh server-release --private-dir /Volumes/KEYS/ope
 scripts/provision_release_keys.sh server-release --private-dir /Volumes/KEYS/open-shorebird --commit-pins --skip-github
 git -C shorebird-server push
 scripts/provision_release_keys.sh server-release --private-dir /Volumes/KEYS/open-shorebird \
-    --version v0.4.0 --publish --skip-github
+    --version v0.1.0 --publish --skip-github
 ```
 
 - `--private-dir` must be outside every git checkout, owned by you, mode 0700

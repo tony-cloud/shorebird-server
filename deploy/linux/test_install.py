@@ -917,8 +917,8 @@ def fake_tool(argv):
 class FakeLocalServer:
     """The running server's local upload route, for staged upgrades."""
 
-    def __init__(self, bin_dir, version, rollback=False):
-        self.bin_dir, self.version, self.rollback = bin_dir, version, rollback
+    def __init__(self, bin_dir, version, rollback=False, refuse=None):
+        self.bin_dir, self.version, self.rollback, self.refuse = bin_dir, version, rollback, refuse
         self.uploads = []
         self.secret = self.rotate()
         owner = self
@@ -947,6 +947,8 @@ class FakeLocalServer:
                 body = self.rfile.read(int(self.headers["Content-Length"]))
                 if self.path != "/api/v1/server/update/local" or not self.authorized():
                     return self.reply(401, {"code": "local_secret_invalid"})
+                if owner.refuse:
+                    return self.reply(409, {"code": owner.refuse})
                 owner.uploads.append(body)
                 with zipfile.ZipFile(io.BytesIO(body)) as archive:
                     new = archive.read("VERSION").decode().strip()
@@ -1200,6 +1202,21 @@ class StagedSourceBuildTest(StagedBase):
         self.install("--binary", write_release(self.directory / "rel", "v1.0.0"), "--allow-development")
         self.assertIn("installed from a signed release", self.build(expect=1))
         self.assertFalse(self.key.exists())
+
+
+class LocalUpdateTest(unittest.TestCase):
+    def test_refusals_are_explained_and_nothing_waits(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        archive = directory / "u.zip"
+        archive.write_bytes(b"PK")
+        fake = FakeLocalServer(directory, "v1.0.0", refuse="update_trial_in_progress")
+        self.addCleanup(fake.close)
+        with self.assertRaisesRegex(lib.InstallError, "still on trial"):
+            lib.local_update(archive, f"http://127.0.0.1:{fake.port}", directory, "v1.0.1", seconds=5)
+        (directory / "server-local-update.secret").unlink()
+        with self.assertRaisesRegex(lib.InstallError, "cannot take a local update"):
+            lib.local_update(archive, f"http://127.0.0.1:{fake.port}", directory, "v1.0.1", seconds=5)
 
 
 class DependenciesTest(unittest.TestCase):

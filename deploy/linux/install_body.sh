@@ -611,6 +611,12 @@ if [[ -n "$domain" ]]; then
     fi
 fi
 
+if [[ -n "$domain" && "$local_host" != 127.0.0.1 && "$local_host" != '[::1]' ]]; then
+    proxy_note+="
+  NOTE: the server also listens on $listen_host:$port; keep that port closed in the firewall, or rerun
+  with --listen 127.0.0.1:$port so only the proxy reaches it."
+fi
+
 summary() {
     local status=$1 password_line database_line backup_db
     if [[ -s "$stage/admin-password" ]]; then
