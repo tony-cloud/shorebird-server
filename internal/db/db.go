@@ -967,3 +967,6 @@ func (db *PgStore) CreateAppSigningKey(ctx context.Context, appID uuid.UUID, pub
 	}
 	return db.GetAppSigningKey(ctx, appID)
 }
+
+// Ping checks that the database answers (supervisor health heartbeat).
+func (s *PgStore) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }

@@ -29,3 +29,8 @@ vendor/
 # Test coverage
 coverage/
 *.coverprofile
+
+# Update signing keys: only the deliberately public DEVELOPMENT-ONLY key is tracked
+signing/*.pem
+!signing/server-update.DEVELOPMENT-ONLY.pem
+*.key

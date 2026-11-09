@@ -339,6 +339,23 @@ base_url: http://your-server.com:8080
 | GET | `/api/v1/admin/settings` | Get registration and SSO settings |
 | PUT | `/api/v1/admin/settings` | Update registration and SSO settings |
 
+### Admin: Server Self-Update
+Global administrators only. Full contract, signing and operations:
+[docs/SELF_UPDATE.md](docs/SELF_UPDATE.md).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/admin/server/update` | Self-update mode, settings and state |
+| PUT | `/api/v1/admin/server/update` | Channel (`stable`/`dev`), automatic updates, interval (default 1 day), mirror |
+| POST | `/api/v1/admin/server/update/check` | Check the selected channel now |
+| POST | `/api/v1/admin/server/update/install` | Install the checked version (`{"version"}`) |
+| POST | `/api/v1/admin/server/update/upload` | Upload a signed update ZIP (`application/zip`) |
+| POST | `/api/v1/admin/server/update/rollback` | Restore the previous image (password re-authentication) |
+| GET | `/api/v1/admin/server/update/audit` | Self-update audit events |
+
+Docker images report `managed_externally` and never replace their binary;
+update them by pulling a new image.
+
 ## Environment Variables
 
 See `.env.example` for all available configuration options.

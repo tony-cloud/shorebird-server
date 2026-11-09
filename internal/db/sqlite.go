@@ -784,3 +784,6 @@ func (s *SqliteStore) CreateAppSigningKey(ctx context.Context, appID uuid.UUID, 
 	}
 	return s.GetAppSigningKey(ctx, appID)
 }
+
+// Ping checks that the database answers (supervisor health heartbeat).
+func (s *SqliteStore) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }

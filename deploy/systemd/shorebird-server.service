@@ -1,0 +1,35 @@
+# Example systemd unit for a self-updating shorebird-server
+# (docs/SELF_UPDATE.md, "Installation layout").
+#
+#   /var/lib/shorebird-server/bin/shorebird-server   managed image, owned by the service user
+#   /usr/local/bin/shorebird-server -> the managed image (symlink, root-owned)
+#   /etc/shorebird-server/server.env                 configuration (root:shorebird 0640)
+#
+# The binary supervises itself: systemd starts one process, which runs the
+# server as a child and replaces/rolls back that child without a systemd
+# restart. Keep KillMode=mixed so a stop reaches the supervisor first and the
+# supervisor stops its child gracefully.
+[Unit]
+Description=Shorebird self-hosted server
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=shorebird
+Group=shorebird
+WorkingDirectory=/var/lib/shorebird-server
+EnvironmentFile=/etc/shorebird-server/server.env
+ExecStart=/usr/local/bin/shorebird-server
+KillMode=mixed
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/shorebird-server
+
+[Install]
+WantedBy=multi-user.target

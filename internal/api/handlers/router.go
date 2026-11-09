@@ -20,8 +20,24 @@ import (
 //go:embed openapi.yaml
 var openAPISpec []byte
 
+// RouterOptions are optional router components.
+type RouterOptions struct {
+	Signing SigningConfig
+	// ServerUpdate adds the administrator self-update API (nil: not mounted).
+	ServerUpdate *ServerUpdateHandler
+}
+
 // NewRouter creates the HTTP router with all API routes.
 func NewRouter(authService *authpkg.Service, database db.Store, store storage.Store, mailer *email.Mailer, baseURL string, patchDelivery PatchDeliveryConfig, signingConfig ...SigningConfig) *chi.Mux {
+	var opts RouterOptions
+	if len(signingConfig) > 0 {
+		opts.Signing = signingConfig[0]
+	}
+	return NewRouterWithOptions(authService, database, store, mailer, baseURL, patchDelivery, opts)
+}
+
+// NewRouterWithOptions creates the HTTP router with all API routes.
+func NewRouterWithOptions(authService *authpkg.Service, database db.Store, store storage.Store, mailer *email.Mailer, baseURL string, patchDelivery PatchDeliveryConfig, opts RouterOptions) *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(pathOnlyRequestLogger(log.New(os.Stdout, "", log.LstdFlags)))
 	r.Use(chimw.Recoverer)
@@ -38,8 +54,8 @@ func NewRouter(authService *authpkg.Service, database db.Store, store storage.St
 
 	// Initialize handlers
 	signingHandler := &SigningHandler{DB: database}
-	if len(signingConfig) > 0 {
-		signingHandler.MasterKey = append([]byte(nil), signingConfig[0].MasterKey...)
+	if len(opts.Signing.MasterKey) > 0 {
+		signingHandler.MasterKey = append([]byte(nil), opts.Signing.MasterKey...)
 	}
 	authHandler := &AuthHandler{DB: database, AuthService: authService, Mailer: mailer, BaseURL: baseURL}
 	userHandler := &UserHandler{DB: database, BaseURL: baseURL}
@@ -169,6 +185,11 @@ func NewRouter(authService *authpkg.Service, database db.Store, store storage.St
 			r.Delete("/admin/patches/{patchId}/target-devices/{clientId}", adminHandler.RemoveTargetDevice)
 			r.Get("/admin/patches/{patchId}/target-devices", adminHandler.GetTargetDevices)
 			r.Get("/admin/apps/{appId}/events", adminHandler.GetPatchEvents)
+
+			// Admin: server self-update (global administrators only)
+			if opts.ServerUpdate != nil {
+				opts.ServerUpdate.Routes(r)
+			}
 		})
 	})
 

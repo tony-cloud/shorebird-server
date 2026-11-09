@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -16,6 +17,7 @@ type Config struct {
 	Redis         RedisConfig
 	PatchDelivery PatchDeliveryConfig
 	Signing       SigningConfig
+	SelfUpdate    SelfUpdateConfig
 }
 
 // ServerConfig holds HTTP server configuration.
@@ -96,6 +98,29 @@ type PatchDeliveryConfig struct {
 // SigningConfig holds the separately provisioned managed-signing wrapping key.
 type SigningConfig struct{ MasterKey string }
 
+// SelfUpdateConfig is the deployment configuration of the self-updater
+// (docs/SELF_UPDATE.md). SERVER_SELF_UPDATE (auto/on/off) is read by the
+// mode decision itself. Channel, mirror use and schedule are administrator
+// settings kept in server-update.json, not environment variables.
+type SelfUpdateConfig struct {
+	// StateDir holds server-update.json, the audit log and the maintenance
+	// secret. Default: the executable's directory.
+	StateDir string
+	// ConfigFile overrides <StateDir>/server-update.json.
+	ConfigFile string
+	// Repository is the GitHub owner/name publishing signed releases.
+	Repository string
+	// GitHubToken is optional (rate limits); it is never sent to the mirror.
+	GitHubToken string
+	// MirrorURL is the untrusted transport mirror: "default", an https URL,
+	// or "off".
+	MirrorURL string
+	// TrialSeconds is the probation of an updated image (default 300).
+	TrialSeconds int
+	// StartupTimeoutSeconds bounds a child's healthy start (default 120).
+	StartupTimeoutSeconds int
+}
+
 // Load reads configuration from environment variables with sensible defaults.
 func Load() *Config {
 	port := envOrDefault("SERVER_PORT", "8080")
@@ -146,6 +171,15 @@ func Load() *Config {
 			Password: envOrDefault("REDIS_PASSWORD", ""),
 			DB:       0,
 		},
+		SelfUpdate: SelfUpdateConfig{
+			StateDir:              os.Getenv("SERVER_UPDATE_STATE_DIR"),
+			ConfigFile:            os.Getenv("SERVER_UPDATE_CONFIG_FILE"),
+			Repository:            envOrDefault("SERVER_UPDATE_REPOSITORY", "tony-cloud/shorebird-server"),
+			GitHubToken:           os.Getenv("SERVER_UPDATE_GITHUB_TOKEN"),
+			MirrorURL:             envOrDefault("SERVER_UPDATE_MIRROR_URL", "default"),
+			TrialSeconds:          envIntOrDefault("SERVER_UPDATE_TRIAL_SECONDS", 300, 0, 3600),
+			StartupTimeoutSeconds: envIntOrDefault("SERVER_UPDATE_STARTUP_TIMEOUT_SECONDS", 120, 10, 600),
+		},
 		PatchDelivery: PatchDeliveryConfig{
 			EncryptionMode:        envOrDefault("PATCH_DELIVERY_ENCRYPTION", "off"),
 			AESSecret:             envOrDefault("PATCH_DELIVERY_AES_SECRET", ""),
@@ -167,4 +201,14 @@ func envBoolOrDefault(key string, defaultVal bool) bool {
 		return defaultVal
 	}
 	return v == "true" || v == "1" || v == "yes"
+}
+
+// envIntOrDefault reads a bounded integer; out-of-range or malformed values
+// fall back to the default.
+func envIntOrDefault(key string, defaultVal, min, max int) int {
+	v, err := strconv.Atoi(os.Getenv(key))
+	if err != nil || v < min || v > max {
+		return defaultVal
+	}
+	return v
 }

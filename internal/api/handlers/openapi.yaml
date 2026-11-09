@@ -19,6 +19,7 @@ tags:
   - name: devices
   - name: diagnostics
   - name: admin
+  - name: server-update
 paths:
   /health:
     get:
@@ -968,6 +969,195 @@ paths:
           description: Server administrator access required.
         '404':
           description: App not found.
+  /api/v1/admin/server/update:
+    get:
+      operationId: getServerUpdateStatus
+      tags: [server-update]
+      description: Self-update settings and state. Global administrators only (users.is_admin).
+      responses:
+        '200':
+          description: Self-update status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServerUpdateStatus'
+        '401':
+          description: Authentication required.
+        '403':
+          description: Global administrator required (code admin_required).
+    put:
+      operationId: updateServerUpdateSettings
+      tags: [server-update]
+      description: Atomically persists the settings to server-update.json. Unknown fields are refused.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [auto_update, check_interval_seconds]
+              properties:
+                auto_update:
+                  type: boolean
+                check_interval_seconds:
+                  type: integer
+                  minimum: 60
+                  maximum: 604800
+                channel:
+                  type: string
+                  enum: [stable, dev]
+                use_mirror:
+                  type: boolean
+      responses:
+        '200':
+          description: Settings saved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServerUpdateStatus'
+        '400':
+          description: invalid_config, invalid_interval or invalid_channel.
+        '409':
+          description: managed_externally, self_update_disabled, self_update_unavailable or update_busy.
+  /api/v1/admin/server/update/check:
+    post:
+      operationId: checkServerUpdate
+      tags: [server-update]
+      description: Discovers the newest signed release of the selected channel now, independent of the schedule. Poll GET for the result.
+      responses:
+        '202':
+          description: Check started.
+        '409':
+          description: Not active or busy.
+  /api/v1/admin/server/update/install:
+    post:
+      operationId: installServerUpdate
+      tags: [server-update]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [version]
+              properties:
+                version:
+                  type: string
+                  description: Exactly the available_version found by the last check.
+      responses:
+        '202':
+          description: Installation started; the server restarts into the new image on trial.
+        '409':
+          description: check_required, update_trial_in_progress, version_quarantined, update_busy or not active.
+  /api/v1/admin/server/update/upload:
+    post:
+      operationId: uploadServerUpdate
+      tags: [server-update]
+      description: |
+        Signed update ZIP as the raw body. Verified completely (signature,
+        platform, VERSION, size, hash) before 202. A dev-channel ZIP requires
+        the dev channel; the version must be newer than the running one.
+      requestBody:
+        required: true
+        content:
+          application/zip:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '202':
+          description: Accepted; the server installs it and restarts on trial.
+        '409':
+          description: dev_channel_required, version_not_newer, version_quarantined, update_trial_in_progress, update_busy or not active.
+        '415':
+          description: Not application/zip (code zip_required).
+        '422':
+          description: invalid_zip, signature_invalid, untrusted_signer, wrong_platform, version_mismatch, checksum_mismatch or invalid_release.
+  /api/v1/admin/server/update/rollback:
+    post:
+      operationId: rollbackServerUpdate
+      tags: [server-update]
+      description: Restores the hash-bound previous image after password re-authentication and quarantines the current version.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [current_password, current_version, rollback_version]
+              properties:
+                current_password:
+                  type: string
+                current_version:
+                  type: string
+                rollback_version:
+                  type: string
+      responses:
+        '202':
+          description: Rolled back; the server restarts into the previous image.
+        '401':
+          description: Wrong password (code REAUTH_FAILED).
+        '403':
+          description: No password given (code RECENT_AUTH_REQUIRED).
+        '409':
+          description: rollback_conflict, rollback_unavailable or not active.
+        '429':
+          description: Too many failed verifications (code REAUTH_RATE_LIMITED).
+        '500':
+          description: rollback_failed (never retried automatically).
+  /api/v1/admin/server/update/audit:
+    get:
+      operationId: getServerUpdateAudit
+      tags: [server-update]
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 50
+      responses:
+        '200':
+          description: Newest self-update audit events first. Never contains passwords, tokens or secrets.
+  /api/v1/server/maintenance:
+    get:
+      operationId: getServerMaintenance
+      tags: [server-update]
+      description: Only while a supervised server is in maintenance. Bearer token is the content of server-maintenance.secret.
+      security: []
+      responses:
+        '200':
+          description: Causes and updater status.
+        '401':
+          description: MAINTENANCE_SECRET_INVALID.
+  /api/v1/server/maintenance/retry:
+    post:
+      operationId: retryServerMaintenance
+      tags: [server-update]
+      security: []
+      responses:
+        '202':
+          description: The core start is retried now.
+  /api/v1/server/maintenance/update:
+    post:
+      operationId: uploadServerMaintenanceUpdate
+      tags: [server-update]
+      description: Signed update ZIP while the core cannot start (same rules as the administrator upload).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/zip:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '202':
+          description: Accepted; the process restarts into the new image on trial.
 components:
   securitySchemes:
     bearerAuth:
@@ -1007,6 +1197,64 @@ components:
       schema:
         type: integer
   schemas:
+    ServerUpdateStatus:
+      type: object
+      required: [mode, platform, current_version, state, channel, auto_update, check_interval_seconds, use_mirror]
+      properties:
+        mode:
+          type: string
+          enum: [active, managed_externally, disabled, unavailable]
+        managed_by:
+          type: string
+          description: For managed_externally, for example docker or kubernetes.
+        unavailable_reason:
+          type: string
+        platform:
+          type: string
+        repository:
+          type: string
+        channel:
+          type: string
+          enum: [stable, dev]
+        use_mirror:
+          type: boolean
+        auto_update:
+          type: boolean
+        check_interval_seconds:
+          type: integer
+        current_version:
+          type: string
+        available_version:
+          type: string
+        state:
+          type: string
+          enum: [idle, checking, verifying, installing, restarting, error]
+        error_code:
+          type: string
+        last_check:
+          type: string
+          format: date-time
+        next_check:
+          type: string
+          format: date-time
+        journal_state:
+          type: string
+          enum: [trial, healthy, rolled_back]
+        rollback_version:
+          type: string
+        last_rollback:
+          type: string
+          enum: [manual, watchdog]
+        rolled_back_version:
+          type: string
+        development_trust:
+          type: boolean
+        trusted_key_ids:
+          type: array
+          items:
+            type: string
+        install_writable:
+          type: boolean
     PatchEvent:
       type: object
       required: [app_id, type]

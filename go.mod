@@ -12,6 +12,7 @@ require (
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/minio/minio-go/v7 v7.0.80
 	golang.org/x/crypto v0.28.0
+	golang.org/x/mod v0.38.0
 	modernc.org/sqlite v1.33.1
 )
 
